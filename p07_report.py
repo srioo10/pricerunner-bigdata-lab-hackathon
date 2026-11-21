@@ -360,7 +360,8 @@ def main():
     rel = lambda p: "../out/" + p
     parts = []
     parts.append(r"""\section{Dataset and objective}
-\textbf{Dataset:} PriceRunner product classification and clustering (UCI ML Repository \#837), file
+\textbf{Dataset:} PriceRunner product classification and clustering (UCI ML Repository \#837,
+\url{https://archive.ics.uci.edu/dataset/837/product+classification+and+clustering}), file
 \texttt{pricerunner\_\allowbreak aggregate.csv}: """ + f"{n_raw:,}".replace(",", "{,}") + f""" product listings collected from {m_raw} online merchants ({m_clean} after cleaning), with
 {raw.shape[1]} attributes: Product ID, Product Title, Merchant ID, Cluster ID (the actual product a listing refers to),
 Cluster Label, Category ID and Category Label ({raw["Category Label"].str.strip().nunique()} product categories).""" + r"""\\
@@ -450,7 +451,7 @@ What the cleaning did (from \texttt{out/preprocess\_log.txt}):""")
 \date{25CS5004 / CS5010 \quad November 2026}
 \setcounter{tocdepth}{1}
 \begin{document}\maketitle
-""" + (f"\\begin{{center}}\\small Code: \\url{{{CODE_LINK}}}\\end{{center}}\n" if CODE_LINK else "") + front_page("\n\n".join(parts)) + r"""\newpage\tableofcontents\thispagestyle{plain}\newpage
+""" + (f"\\begin{{center}}\\small Code: \\url{{{CODE_LINK}}}\\\\ Dataset: \\url{{https://archive.ics.uci.edu/dataset/837/product+classification+and+clustering}}\\end{{center}}\n" if CODE_LINK else "") + front_page("\n\n".join(parts)) + r"""\newpage\tableofcontents\thispagestyle{plain}\newpage
 """ + re.sub(r"\\(sub)?section\{", lambda m: "\\FloatBarrier\n" + m.group(0), "\n\n".join(parts)) + "\n\\FloatBarrier\n\\end{document}\n"
     (REP / "report.tex").write_text(tex)
     for _ in range(2):
