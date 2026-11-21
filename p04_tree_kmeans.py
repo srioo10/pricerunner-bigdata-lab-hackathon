@@ -405,7 +405,12 @@ def main():
     for (a, b), v in np.ndenumerate(ct.values): ax.text(b, a, v, ha="center", va="center", color="w", fontsize=10)
     ax.set_title("K-Means (k=10) clusters vs true categories"); fig.colorbar(im, label="log(1+count)")
     fig.savefig(OUT / "km_vs_category.png", dpi=150, bbox_inches="tight"); plt.close(fig)
-    P2 = TruncatedSVD(2, random_state=0).fit_transform(Z[samp])
+    sv2 = TruncatedSVD(2, random_state=0); P2 = sv2.fit_transform(Z[samp])
+    # how much of the cluster structure survives in 2-D: silhouette of the same labels in the plane vs in the full space
+    s2, sfull = silhouette_score(P2, lab[samp]), silhouette_score(Z[samp], lab[samp])
+    say(f"- 2-D projection (figure below): the two SVD components keep {sv2.explained_variance_ratio_.sum():.0%} of the variance. "
+        f"The same cluster labels give silhouette {s2:.3f} in the plane against {sfull:.3f} in the full space, so clusters that "
+        "overlap in the plot can still be separate in 100 dimensions; the plot shows layout, not separation.\n")
     fig, ax = plt.subplots(figsize=(7, 6)); sc = ax.scatter(P2[:, 0], P2[:, 1], c=lab[samp], cmap="tab10", s=4, alpha=.6)
     ax.set(title="K-Means clusters in 2-D (SVD projection, 6000 listings)", xlabel="SVD component 1", ylabel="SVD component 2")
     ax.legend(*sc.legend_elements(), title="cluster", loc="upper right", fontsize=9, ncol=2)
