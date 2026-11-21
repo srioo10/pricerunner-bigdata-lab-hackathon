@@ -179,7 +179,7 @@ fig, ax = plt.subplots(figsize=(11, 5))
 ax.bar(range(1, 26), top25.values, color="#4c72b0", edgecolor="black", linewidth=0.4)
 ax.set_xlabel("Brand (ranked by number of listings)")
 ax.set_ylabel("Listings")
-ax.set_xticks(range(1, 26), top25.index, rotation=60, ha="right", fontsize=10)   # brand names, readable
+ax.set_xticks(range(1, 26), top25.index, rotation=60, ha="right", rotation_mode="anchor", fontsize=10)   # brand names, readable
 ax.set_ylim(0, top25.max() * 1.15)
 ax2 = ax.twinx()
 ax2.plot(range(1, 26), 100 * cum_all.head(25).values, color="#c44e52", marker="o", ms=3, lw=1.6,
