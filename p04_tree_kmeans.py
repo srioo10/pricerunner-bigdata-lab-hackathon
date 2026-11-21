@@ -135,7 +135,7 @@ def main():
     g.to_csv(OUT / "dt_grid_cv.csv", index=False)
     say("| criterion | max_depth | min_samples_leaf | CV train F1 | CV val F1 (mean +- sd) | fit time (s) |\n|---|---|---|---|---|---|")
     for r in g.itertuples():
-        say(f"| {r.criterion} | {r.max_depth} | {r.min_samples_leaf} | {r.mean_train_score:.4f} | "
+        say(f"| {r.criterion} | {"no limit" if pd.isna(r.max_depth) else int(r.max_depth)} | {r.min_samples_leaf} | {r.mean_train_score:.4f} | "
             f"{r.mean_test_score:.4f} +- {r.std_test_score:.4f} | {r.mean_fit_time:.2f} |")
     CRIT = {"gini": "the Gini criterion", "entropy": "entropy"}
     bc = {c: g[g.criterion == c].mean_test_score.max() for c in ("gini", "entropy")}
