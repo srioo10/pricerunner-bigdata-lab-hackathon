@@ -14,6 +14,8 @@ Output: out/stats_transform.md, out/fig_skew_transform.png
 import numpy as np, pandas as pd
 import matplotlib; matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+plt.rcParams.update({"font.size": 17, "axes.titlesize": 18, "axes.labelsize": 17, "xtick.labelsize": 15,
+                     "ytick.labelsize": 15, "legend.fontsize": 14})   # figures are shrunk to page width, so start large
 from scipy import stats
 from pathlib import Path
 
@@ -44,7 +46,7 @@ def main():
     sym = [c for c in num if abs(sk[c]) < 0.5]; mod = [c for c in num if 0.5 <= abs(sk[c]) < 1]; hi = [c for c in num if abs(sk[c]) >= 1]
     say(f"\nRoughly symmetric (|skew| < 0.5): {', '.join(sym) or '-'}. Moderately skewed (0.5-1): {', '.join(mod) or '-'}. "
         f"Highly right-skewed (> 1): {', '.join(hi) or '-'}; for these the median is a better centre than the mean.\n")
-    say("Category is nominal: its mode is **" + df.category.mode().iloc[0] + "** with "
+    say("Category is nominal: its mode is " + df.category.mode().iloc[0] + " with "
         f"{df.category.value_counts().iloc[0]} listings.\n")
     corr = df[num].corr().round(3)
     say("Pearson correlation matrix:\n\n| | " + " | ".join(num) + " |\n|---|" + "---|" * len(num))
@@ -70,7 +72,7 @@ def main():
     for nb in (4, 6):
         b = pd.qcut(x, nb, duplicates="drop")
         g = x.groupby(b, observed=True)
-        say(f"**{nb} bins** (equal frequency):\n\n| bin | count | min | max | smoothed by mean | smoothed by median |\n|---|---|---|---|---|---|")
+        say(f"{nb} bins (equal frequency):\n\n| bin | count | min | max | smoothed by mean | smoothed by median |\n|---|---|---|---|---|---|")
         for iv, s in g:
             say(f"| {iv} | {len(s)} | {s.min():.0f} | {s.max():.0f} | {s.mean():.2f} | {s.median():.1f} |")
         bmean = g.transform("mean"); bmed = g.transform("median")
@@ -97,7 +99,8 @@ def main():
     # the z rule uses mean and std, which the extreme values themselves inflate; the IQR fence uses quartiles only
     say(f"\nThe IQR fence flags more points than abs(z) > 3 on: {', '.join(more_iqr) or 'none'}. "
         "The z rule is computed from the mean and std, which the extreme values pull up, so it flags fewer of them. "
-        "No rows are dropped here: title-length outliers were already removed in p01, and large count values are real "
+        "These fences are recomputed on the cleaned data, so they differ from the p01 cleaning fence (computed on the raw "
+        "titles) and the titles they flag are kept. No rows are dropped here; large count values are real "
         "popular products or merchants.\n")
 
     # ---- skew transforms ----

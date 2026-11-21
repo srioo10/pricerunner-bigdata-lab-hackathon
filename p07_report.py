@@ -9,6 +9,7 @@ Run p01..p06 first, then: python p07_report.py
 import re, subprocess, textwrap
 from pathlib import Path
 import pandas as pd
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parent
 OUT = ROOT / "out"; REP = ROOT / "report"; REP.mkdir(exist_ok=True)
@@ -38,15 +39,24 @@ def esc(s):
     return s.replace("\\textbackslash{}rightarrow", "\\rightarrow")
 
 def short_heading(t):
-    """Long sentence-like headings -> (short heading, full text or None). Leading 'A. '/'B. ' letters are dropped."""
+    """Split a long sentence-like heading into (short heading, remainder or None).
+    The remainder is only the part the short heading leaves out, printed as a line under it.
+    Leading 'A. '/'B. ' letters are dropped."""
     t = re.sub(r"^[A-Z]\.\s+", "", t.strip())
     if len(t) <= 60: return t, None
     seps = (" -> ", " (", ":", ";", ", ")
     cut = lambda x: min([k for k in (x.find(sep) for sep in seps) if k > 0] or [len(x)])
-    head = t[:cut(t)].rstrip(" ,.:;")
+    head, src = t[:cut(t)].rstrip(" ,.:;"), t
     if len(head) < 12 and ":" in t:                  # 'Extra: K-Means ...' -> use the text after the colon
-        rest = t.split(":", 1)[1].strip(); head = rest[:cut(rest)].rstrip(" ,.:;") or head
-    return (head, t) if head != t else (t, None)
+        src = t.split(":", 1)[1].strip(); head = src[:cut(src)].rstrip(" ,.:;") or head
+    if head == t: return t, None
+    rest = src[len(head):].strip() if src.startswith(head) else ""
+    rest = re.sub(r"^(->|[,.:;])\s*", "", rest)
+    if rest.startswith("("):                         # '(5-fold CV ...)' -> '5-fold CV ...'
+        rest = rest[1:].replace(")", "", 1)
+    rest = rest.strip(" ,.:;")
+    if not rest: return head, None
+    return head, rest[0].upper() + rest[1:] + ("" if rest.endswith((".", ")")) else ".")
 
 def short_header(c):
     """Shorten verbose machine column names (speedup_vs_mlxtend_apriori -> x vs apriori)."""
@@ -69,9 +79,13 @@ def classification_report_tex(block):
             + "\n".join(fmt(r) for r in rows) + ("\n\\midrule\n" + "\n".join(fmt(r) for r in summary) if summary else "")
             + "\n\\bottomrule\\end{tabular}}\\par\\medskip")
 
-def md_to_tex(md, base_level=1):
+APPENDIX = []        # (title, tex) of long tables moved out of the main text to keep it readable
+LONG_TABLE = 16      # data rows above which a table goes to the appendix
+
+def md_to_tex(md, base_level=1, appendix=True):
     """Small markdown -> LaTeX converter for the outputs written by the scripts (headings, tables, bullets, code)."""
     lines, out, i = md.splitlines(), [], 0
+    last_head = "Table"
     secs = ["section", "subsection", "subsubsection", "paragraph"]
     while i < len(lines):
         l = lines[i]
@@ -83,8 +97,27 @@ def md_to_tex(md, base_level=1):
         m = re.match(r"^(#+)\s+(.*)", l)
         if m:
             lvl = min(len(m.group(1)) - 1 + base_level, 3)
-            head, full = short_heading(m.group(2))
-            out.append(f"\\{secs[lvl]}{{{esc(head)}}}" + (f"\n{esc(full)}\\par" if full else "")); i += 1; continue
+            head, rest = short_heading(m.group(2))
+            last_head = head
+            # keep a heading on the same page as the start of its content: reserve its intro text and,
+            # when a table follows, the whole table (a tabularx cannot break across pages)
+            j, text_lines = i + 1, 0
+            while j < len(lines) and not lines[j].startswith(("|", "#", "```")) and text_lines < 4:
+                text_lines += bool(lines[j].strip()); j += 1
+            rows_ahead = 0
+            while j < len(lines) and lines[j].startswith("|"): rows_ahead += 1; j += 1
+            need = 4 + 2 * text_lines + (0.8 * rows_ahead if rows_ahead <= 40 else 6)
+            need += 2 * bool(rest)                                        # the line printed under a shortened heading
+            if j < len(lines) and lines[j].startswith("#"): need += 6    # a sub-heading follows: keep its start too
+            out.append(f"\\needspace{{{need:.0f}\\baselineskip}}")
+            out.append(f"\\{secs[lvl]}{{{esc(head)}}}" + (f"\n{esc(rest)}\\par" if rest else "")); i += 1; continue
+        if l.startswith("|") and appendix:
+            j = i
+            while j < len(lines) and lines[j].startswith("|"): j += 1
+            if j - i - 2 > LONG_TABLE:                     # header + separator + data rows
+                APPENDIX.append((last_head, md_to_tex("\n".join(lines[i:j]), base_level, appendix=False)))
+                out.append(f"The full table ({j - i - 2} rows) is in Appendix~A, Table~A.{len(APPENDIX)}.\\par")
+                i = j; continue
         if l.startswith("|"):
             rows = []
             while i < len(lines) and lines[i].startswith("|"):
@@ -100,7 +133,14 @@ def md_to_tex(md, base_level=1):
                 out.append("{\\scriptsize\\begin{tabular}{l" + "r" * (n - 1) + "}\\toprule\n" + body[0] + "\\midrule\n"
                            + "\n".join(body[1:]) + "\n\\bottomrule\\end{tabular}}\\par\\medskip"); continue
             wide = max(range(n), key=lambda k: max(len(r[k]) for r in rows))
-            spec = "".join("X" if k == wide else "l" for k in range(n))
+            # every column with long text (not only the widest) gets an X column, so it wraps instead of
+            # stretching the table and leaving wide gaps in the short columns
+            text_cols = {k for k in range(n) if max(len(r[k]) for r in rows[1:]) > 30
+                         and not all(re.fullmatch(r"[\d.,%x\s-]*", r[k]) for r in rows[1:])}
+            if not text_cols and sum(max(len(r[k]) for r in rows) + 3 for k in range(n)) > 110:
+                # too wide at natural width because of long headers: let those header columns wrap
+                text_cols = {k for k in range(n) if len(rows[0][k]) > 12}
+            spec = "".join("X" if k in text_cols else "l" for k in range(n))
             body = [" & ".join(esc(c) for c in r) + r" \\" for r in rows]
             size = "\\tiny" if n >= 9 else "\\scriptsize"          # wide tables get a smaller font so they fit
             other = sum(max(len(r[k]) for r in rows) for k in range(n) if k != wide)
@@ -110,6 +150,9 @@ def md_to_tex(md, base_level=1):
                                for k in range(n))
                 out.append("{" + size + "\\setlength\\LTleft{0pt}\\begin{longtable}{" + spec + "}\\toprule\n" + body[0]
                            + "\\midrule\\endhead\n" + "\n".join(body[1:]) + "\n\\bottomrule\\end{longtable}}\\par\\medskip"); continue
+            if not text_cols:                         # short cells only: natural width, no stretched gaps
+                out.append("{" + size + "\\begin{tabular}{" + spec + "}\\toprule\n" + body[0] + "\\midrule\n"
+                           + "\n".join(body[1:]) + "\n\\bottomrule\\end{tabular}}\\par\\medskip"); continue
             out.append("{" + size + "\\begin{tabularx}{\\linewidth}{" + spec + "}\\toprule\n" + body[0] + "\\midrule\n"
                        + "\n".join(body[1:]) + "\n\\bottomrule\\end{tabularx}}\\par\\medskip"); continue
         if l.startswith("- "):
@@ -119,17 +162,14 @@ def md_to_tex(md, base_level=1):
         out.append(esc(l) if l.strip() else ""); i += 1
     return "\n".join(out)
 
-def fig(path, caption, width="0.85\\linewidth"):
-    return (f"\\begin{{figure}}[htbp]\\centering\\includegraphics[width={width}]{{{path}}}"
+def fig(path, caption, width="0.85\\linewidth", place="htbp"):
+    return (f"\\begin{{figure}}[{place}]\\centering\\includegraphics[width={width}]{{{path}}}"
             f"\\caption{{{esc(caption)}}}\\end{{figure}}")
 
 def plot_caption(title, body):
-    """Caption that says what the plot shows: the first inference, cut at its first clause and shortened."""
-    first = next((l[2:] for l in body.splitlines() if l.startswith("- ")), "")
-    if not first: return title
-    cut = re.split(r";\s| - |, so |, i\.e\. |\.\s", first, maxsplit=1)[0].rstrip(" .")
-    if len(cut) > 120: cut = cut[:120].rsplit(" ", 1)[0] + " ..."
-    return f"{title}. {cut}."
+    """Caption from the 'Plotted:' line p02 writes for each figure (chart type, variable, n); else the title."""
+    line = next((l for l in body.splitlines() if l.startswith("Plotted: ")), "")
+    return line[len("Plotted: "):].rstrip(".") if line else title
 
 def plots_section():
     md = (OUT / "plot_inferences.md").read_text()
@@ -140,17 +180,28 @@ def plots_section():
         title, body = b.split("\n", 1) if "\n" in b else (b, "")
         key = title.split()[0][:5]
         name = re.sub(r"^fig\d+\s*-\s*", "", title.strip())
-        tex.append(f"\\subsection{{{esc(name)}}}")
-        if key in figs: tex.append(fig(figs[key].relative_to(ROOT).as_posix().replace("out/", "../out/"),
-                                       plot_caption(name, body), "0.62\\linewidth"))
-        tex.append("\\needspace{8\\baselineskip}\\textbf{Key inferences:}\n" + md_to_tex(body.strip()))
+        bullets = "\n".join(l for l in body.strip().splitlines() if not l.startswith("Plotted: "))
+        n_lines = 4 + sum(2 for l in bullets.splitlines() if l.startswith("- "))   # heading, caption, ~2 lines a bullet
+        if key in figs:
+            w_px, h_px = Image.open(figs[key]).size
+            # the 2x5 radar grid needs more width to stay readable; near-square plots get less so they are not too tall
+            frac = 0.8 if h_px / w_px < 0.5 else 0.42 if h_px / w_px > 0.8 else 0.55
+            frac = {"fig07": 0.9, "fig08": 0.7, "fig10": 0.7, "fig11": 1.0, "fig14": 0.75}.get(key, frac)   # busy plots need more width
+            # reserve room for heading + figure + bullets, so a page break never separates them
+            tex.append(f"\\needspace{{\\dimexpr{frac * h_px / w_px:.3f}\\linewidth+{n_lines}\\baselineskip\\relax}}")
+            tex.append(f"\\subsection{{{esc(name)}}}")
+            tex.append(fig(figs[key].relative_to(ROOT).as_posix().replace("out/", "../out/"),
+                           plot_caption(name, body), f"{frac}\\linewidth", "H"))
+        else:
+            tex.append(f"\\subsection{{{esc(name)}}}")
+        tex.append(md_to_tex(bullets))
     return "\n".join(tex)
 
 REQUIRED = ["clean.csv", "preprocess_log.txt", "stats_transform.md", "plot_inferences.md", "arm/arm_summary.md",
             "model/model_summary.md", "mafia/mafia_summary.md", "mafia/fig_mafia_sweep.png", "spark/results.md"]
 
 def check_outputs():
-    """Fail loudly if a step was not run, so the PDF never silently misses a section."""
+    """Stop with an error if an earlier step has not been run, so no section is left out of the PDF."""
     missing = [f for f in REQUIRED if not (OUT / f).exists()]
     if missing:
         raise SystemExit(f"missing outputs (run the p0x scripts first): {missing}")
@@ -198,6 +249,88 @@ def check_traceability():
 
 CODE_LINK = "https://github.com/srioo10/pricerunner-bigdata-lab-hackathon"   # public repo with the code
 
+def log_table(log):
+    """Turn the p01 log into a short two-column table; the raw log stays in out/ for anyone who wants it."""
+    g = lambda pat: (re.search(pat, log) or [None, None])[1]
+    n = lambda v: f"{int(v):,}" if v and v.isdigit() else v
+    rows = []
+    if (r := re.search(r"RAW shape: \((\d+), (\d+)\)", log)): rows.append(("Raw file", f"{n(r[1])} rows, {r[2]} columns"))
+    if (m := g(r"Missing values per column: (\{[^}]*\})")) is not None:
+        miss = sum(int(v) for v in re.findall(r": (\d+)", m)); rows.append(("Missing values", f"{miss} in all columns"))
+    if (v := g(r"Exact duplicate rows: (\d+)")) is not None: rows.append(("Exact duplicate rows", v))
+    if (v := g(r"Cleaning audit: (\d+) words")): rows.append(("Words in the cleaned titles", n(v)))
+    for lab, key in (("stop words", "stop word"), ("one-character words", "1-char junk"), ("SKU / model codes", "SKU/model code"),
+                     ("bare numbers", "bare number"), ("repeated words", "repeated word")):
+        if (v := g(key + r": (\d+)")): rows.append(("Removed: " + lab, n(v)))
+    if (v := g(r"spec token kept: (\d+)")): rows.append(("Kept: spec words such as 1400rpm, lga1151", n(v)))
+    if (v := g(r"repaired German umlaut fragments: (\d+)")): rows.append(("German listings repaired and translated", n(v)))
+    if (v := g(r"no informative token[^:]*: (\d+)")): rows.append(("Titles with no informative word (removed)", v))
+    if (r := re.search(r"IQR fence \[([-\d.]+), ([-\d.]+)\] -> (\d+)", log)):
+        rows.append((f"Titles longer than the 1.5 IQR fence ({r[2]} characters, removed)", n(r[3])))
+    if (r := re.search(r"Rows: (\d+) -> (\d+) after cleaning \((\d+) removed, ([\d.]+%)\)", log)):
+        rows.append(("Rows after cleaning", f"{n(r[2])} ({n(r[3])} removed, {r[4]})"))
+    if (r := re.search(r"merchants=(\d+), clusters=(\d+), categories=(\d+)", log)):
+        rows.append(("Merchants / products / categories", f"{r[1]} / {n(r[2])} / {r[3]}"))
+    if (r := re.search(r"Vocabulary after cleaning: (\d+) distinct words.*?(\{.*\})", log)):
+        top = ", ".join(re.findall(r"'([^']+)'", r[2])[:8])
+        rows.append(("Distinct words after cleaning", f"{n(r[1])} (most common: {top})"))
+    body = "\n".join(f"{esc(a)} & {esc(b)} \\\\" for a, b in rows)
+    return ("\\begin{center}\\small\\begin{tabularx}{0.92\\linewidth}{lX}\\toprule step & result \\\\ \\midrule\n"
+            + body + "\n\\bottomrule\\end{tabularx}\\end{center}\n")
+
+def front_page(body):
+    """Page-1 summary box: headline results, read from the output files."""
+    rd = lambda f: (OUT / f).read_text() if (OUT / f).exists() else ""
+    g = lambda pat, txt: (re.search(pat, txt, re.S) or [None])[0] and re.search(pat, txt, re.S).groups()
+    res = []
+    if (r := g(r"Rows: (\d+) -> (\d+) after cleaning", rd("preprocess_log.txt"))):
+        res.append(("Data", f"{int(r[0]):,} listings, {int(r[1]):,} after cleaning; 10 product categories"))
+    res.append(("Plots", f"{len(list((OUT / 'figs').glob('fig*.png')))} plots, each with inferences computed from the data"))
+    if (r := g(r"\| 1% \| 80% \| (\d+) \| \d+ \| (\d+) \|", rd("arm/arm_summary.md"))):
+        res.append(("Apriori", f"{int(r[0]):,} frequent itemsets and {int(r[1]):,} rules at 1% support, 80% confidence"))
+    ms = rd("model/model_summary.md")
+    if (a := g(r"\| stratified random \| ([\d.]+) \|", ms)) and (b := g(r"\| grouped by product[^|]*\| ([\d.]+) \|", ms)):
+        res.append(("Decision tree", f"{float(a[0]):.1%} test accuracy; {float(b[0]):.1%} on products never seen in training"))
+    if (r := g(r"Over 5 seeds \(LSA-100\): NMI ([\d.]+) \+- ([\d.]+)", ms)):
+        res.append(("K-Means", f"k=10, NMI {r[0]} $\\pm$ {r[1]} against the categories over 5 seeds; two dendrograms"))
+    if (r := g(r"(\d+) frequent itemsets reduce to (\d+) closed and (\d+) maximal", rd("mafia/mafia_summary.md"))):
+        res.append(("MAFIA", f"{r[2]} maximal itemsets (from {int(r[0]):,} frequent), identical to mlxtend fpmax"))
+    if (r := g(r"Spark DecisionTree speedup is .*? and ([\d.]+) at (\d+x)", rd("spark/results.md"))):
+        res.append(("PySpark", f"decision tree {r[0]} times faster than sklearn at {r[1]} data; slower on the original size"))
+    rows = "\n".join(f"\\textbf{{{a}}} & {b.replace('%', chr(92) + '%')} \\\\" for a, b in res)
+    return ("\\begin{tcolorbox}[colback=blue!3,colframe=blue!45!black,title=Results at a glance,fonttitle=\\bfseries]\n"
+            "\\begin{tabularx}{\\linewidth}{@{}lX@{}}\n" + rows + "\n\\end{tabularx}\\end{tcolorbox}\n")
+
+
+# Parameters and assumptions, stated once up front (the values are the ones set in the scripts)
+PARAMS_TEX = r"""\subsection{Parameters, assumptions and machine}
+\begin{center}\small\begin{tabularx}{\linewidth}{llX}\toprule
+Step & Parameter & Value and why \\ \midrule
+Cleaning & outlier rule & title length outside $Q_1 - 1.5\,\mathrm{IQR}$ .. $Q_3 + 1.5\,\mathrm{IQR}$ removed \\
+ & model-code rule & token of 6+ letters and digits mixed (e.g.\ lwf28441w) dropped; spec words (1400rpm, 64gb, lga1151) kept \\
+Apriori & min support & 1\% (345 listings) chosen; 2\% and 5\% also run. At 0.5\% the frequent itemsets almost triple (1,129 to 3,180, Section 7) \\
+ & min confidence & 80\% chosen; 70\% and 90\% also run \\
+ & per category & (support, confidence) = (20\%, 80\%), (10\%, 80\%), (5\%, 70\%): each category is a much smaller, denser set \\
+Decision tree & split & 80/20 stratified, seed 42; second split grouped by product (Cluster ID) \\
+ & features & binary bag of words, words in $\geq$ 5 training titles; $\chi^2$ size \{250, 500, 1000, all\} by 5-fold CV \\
+ & grid (5-fold CV) & criterion \{gini, entropy\} $\times$ max depth \{5, 10, 20, 40, none\} $\times$ min samples per leaf \{1, 5\}; picked: gini, no depth limit, 1 \\
+K-Means & features & TF-IDF (words in $\geq$ 3 titles, sublinear tf) $\rightarrow$ LSA 100 dimensions $\rightarrow$ L2 norm (cosine) \\
+ & k, init & k = 10 (one per category); k = 2..24 swept; k-means++ with 10 restarts; seeds 42, 0, 1, 2, 3 \\
+Dendrograms & linkage & Ward on the 10 cluster centroids; average linkage, cosine distance on 60 sampled listings \\
+MAFIA & min support & 1\% (same as Apriori), sweep 5\%, 2\%, 1\%, 0.5\% \\
+PySpark & engines & FPGrowth (support 1\%, confidence 80\%) and DecisionTree (entropy, depth 20, 1,000-word vocabulary) \\
+ & scaling & data copied 1, 2, 5, 10, 20 times; median of 3 runs; local[*] mode, 32 partitions, 6 GB driver \\
+\bottomrule\end{tabularx}\end{center}
+\textbf{Assumptions.} (1) The product title is the only text a listing has, so every model uses only the title; Merchant ID and
+Cluster ID describe the data but are not features. (2) The first informative word of a title stands in for the brand,
+since the file has no brand column. (3) The category label is correct and is used only to evaluate K-Means, never to fit it.
+(4) Spark's larger inputs are copies of the same listings; they test speed, not accuracy on new data. No other data
+source was used.
+
+\textbf{Machine.} All runs and timings: ASUS Zenbook 14 (UX3405CA) laptop, Intel Core Ultra 7 255H (16 cores), 32 GB RAM,
+Fedora Linux 44, Python 3.12, PySpark 4.3 on OpenJDK 25. Timings depend on this machine and are compared only with each other.
+"""
+
 def implementation_section():
     """Short map of the code (no source listing): which script does what and where its output appears."""
     rows = [("p01\\_preprocess.py", "cleaning, German repair, token rules, IQR outliers, selection, encoding", "2"),
@@ -233,9 +366,9 @@ Cluster Label, Category ID and Category Label ({raw["Category Label"].str.strip(
 \textbf{Objective:} descriptive analytics (preprocessing + visualisation) followed by predictive analytics:
 Apriori association rules, Decision Tree classification of the category from the title, K-Means clustering
 of titles (with dendrograms), MAFIA maximal frequent itemsets, and a PySpark comparison of two techniques.\\
-\textbf{Assumed parameters} (the exam allows them to be assumed and stated) are given in each section.
 \textbf{Tools:} Python 3.12, pandas, scikit-learn, mlxtend, matplotlib/seaborn, PySpark (local mode), MAFIA 1.4 C++
 binary from the FIMI repository. Source files: \texttt{p01\_preprocess.py} \dots\ \texttt{p07\_report.py}.""")
+    parts.append(PARAMS_TEX)
     parts.append("\\section{Data preprocessing}\n" + r"""Steps applied by \texttt{p01\_preprocess.py}:
 \begin{itemize}\setlength\itemsep{0pt}
 \item \textbf{(i) Cleaning:} header whitespace stripped; titles lower-cased; punctuation noise removed; units joined
@@ -252,11 +385,11 @@ For the decision tree, the number of $\chi^2$-ranked words to keep (250, 500, 10
 \texttt{cat=\allowbreak<category>}); binary bag-of-words (decision tree); TF-IDF + truncated SVD (K-Means); label encoding of
 the category; min-max scaling of the length attributes; FIMI integer format for MAFIA.
 \end{itemize}
-Log produced by the script:""")
+What the cleaning did (from \texttt{out/preprocess\_log.txt}):""")
     log = (OUT / "preprocess_log.txt").read_text()
     # wrap long log lines so the verbatim block stays inside the margins; hide local paths
     log = log.replace(str(ROOT) + "/", "")
-    parts.append("{\\scriptsize\\begin{verbatim}\n" + "\n".join(w for l in log.splitlines() for w in (textwrap.wrap(l, 105) or [""])) + "\n\\end{verbatim}}")
+    parts.append(log_table(log))
     st = OUT / "stats_transform.md"
     if st.exists():
         parts.append(md_to_tex(st.read_text(), 1).replace("\\subsection{Descriptive statistics and data transformation}",
@@ -270,17 +403,19 @@ Log produced by the script:""")
     model = (OUT / "model/model_summary.md").read_text()
     dt, km = model.split("# K-Means clustering", 1)
     parts.append(md_to_tex(dt, 0))
-    parts += [fig(rel("model/dt_confusion.png"), "Decision tree: confusion matrix on the test set", "0.62\\linewidth"),
+    parts += [fig(rel("model/dt_confusion.png"), "Decision tree: confusion matrix on the test set", "0.75\\linewidth"),
               fig(rel("model/dt_importance.png"), "Decision tree: top-20 feature importances", "0.55\\linewidth"),
               fig(rel("model/dt_tree.png"), "Top two levels of the tuned decision tree (the model evaluated and used for the IF-THEN rules)", "\\linewidth")]
     km_md, dendro_md = ("# K-Means clustering" + km).split("## Dendrogram merges", 1)
     parts.append(md_to_tex(km_md, 0))
     parts += [fig(rel("model/km_elbow_silhouette.png"), "Elbow (SSE) and silhouette for k = 2..24", "0.85\\linewidth"),
-              fig(rel("model/km_vs_category.png"), "K-Means (k=10) clusters vs true categories", "0.6\\linewidth"),
+              fig(rel("model/km_vs_category.png"), "K-Means (k=10) clusters vs true categories", "0.8\\linewidth"),
               fig(rel("model/km_scatter2d.png"), "K-Means clusters projected to 2-D", "0.5\\linewidth")]
     parts.append(md_to_tex("## Dendrograms (hierarchical clustering)" + dendro_md, 0))
     parts += [fig(rel("model/dendro_categories.png"), "Dendrogram of the 10 category centroids (Ward)", "0.75\\linewidth"),
-              fig(rel("model/dendro_sample.png"), "Dendrogram of 60 listings, 6 per category (average link, cosine)", "\\linewidth")]
+              fig(rel("model/dendro_sample.png"), "Dendrogram of 60 listings, 6 per category (average link, cosine). "
+                  "Leaf codes: CPU = CPUs, CAM = Digital Cameras, DW = Dishwashers, FZ = Freezers, FF = Fridge Freezers, "
+                  "FR = Fridges, MW = Microwaves, PH = Mobile Phones, TV = TVs, WM = Washing Machines", "0.55\\linewidth")]
 
     parts.append(md_to_tex((OUT / "mafia/mafia_summary.md").read_text().replace("# MAFIA maximal frequent itemsets", "# Maximal frequent itemsets with MAFIA"), 0))
     parts.append(fig(rel("mafia/fig_mafia_sweep.png"), "Run time of Apriori, FP-growth and MAFIA, and FI/CFI/MFI counts, against minimum support", "0.95\\linewidth"))
@@ -294,17 +429,27 @@ Log produced by the script:""")
             parts.append(fig(rel("spark/" + f.name), cap, "0.7\\linewidth"))
     parts.append(md_to_tex(CONCLUSIONS.read_text(), 0))
     parts.append(implementation_section())
+    if APPENDIX:
+        parts.append("\\appendix\\section{Long tables}\n" + "\n".join(
+            f"\\subsection*{{Table A.{k}: {esc(t)}}}\n{tex}" for k, (t, tex) in enumerate(APPENDIX, 1)))
 
     tex = r"""\documentclass[10pt,a4paper]{article}
 \usepackage[margin=2cm]{geometry}\usepackage{graphicx,booktabs,tabularx,float,xcolor,amsmath,needspace,placeins,longtable}
-\usepackage[hidelinks]{hyperref}\usepackage[T1]{fontenc}\usepackage{lmodern}
-\setlength{\parindent}{0pt}\setlength{\parskip}{4pt}\sloppy\setlength{\emergencystretch}{3em}
+\usepackage[T1]{fontenc}\usepackage{lmodern}\usepackage{tcolorbox}\usepackage{fancyhdr}
+\usepackage[font=small,labelfont=bf]{caption}\usepackage{titlesec}
+\definecolor{head}{RGB}{25,55,110}
+\titleformat*{\section}{\Large\bfseries\color{head}}\titleformat*{\subsection}{\large\bfseries\color{head}}
+\pagestyle{fancy}\fancyhf{}\fancyhead[L]{\small PriceRunner product analytics}\fancyhead[R]{\small Sooraj S, CS23I1006}
+\fancyfoot[C]{\small\thepage}\renewcommand{\headrulewidth}{0.4pt}\setlength{\headheight}{14pt}
+\usepackage[colorlinks,linkcolor=head,urlcolor=head]{hyperref}
+\setlength{\parindent}{0pt}\setlength{\parskip}{5pt}\linespread{1.04}\sloppy\setlength{\emergencystretch}{3em}
 \renewcommand{\topfraction}{0.85}\renewcommand{\textfraction}{0.1}\renewcommand{\floatpagefraction}{0.75}
 \title{Analytics \& Systems of Big Data Practice -- End-semester\\\large Descriptive and predictive analytics on the PriceRunner product dataset}
 \author{Sooraj S \quad (CS23I1006)}
-\date{25CS5004 / CS5010}
+\date{25CS5004 / CS5010 \quad November 2026}
+\setcounter{tocdepth}{1}
 \begin{document}\maketitle
-""" + (f"\\begin{{center}}\\small Code: \\url{{{CODE_LINK}}}\\end{{center}}\n" if CODE_LINK else "") + r"""\tableofcontents\newpage
+""" + (f"\\begin{{center}}\\small Code: \\url{{{CODE_LINK}}}\\end{{center}}\n" if CODE_LINK else "") + front_page("\n\n".join(parts)) + r"""\newpage\tableofcontents\thispagestyle{plain}\newpage
 """ + re.sub(r"\\(sub)?section\{", lambda m: "\\FloatBarrier\n" + m.group(0), "\n\n".join(parts)) + "\n\\FloatBarrier\n\\end{document}\n"
     (REP / "report.tex").write_text(tex)
     for _ in range(2):

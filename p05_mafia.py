@@ -20,6 +20,8 @@ from mlxtend.preprocessing import TransactionEncoder
 from mlxtend.frequent_patterns import fpmax, apriori, fpgrowth
 import matplotlib; matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+plt.rcParams.update({"font.size": 17, "axes.titlesize": 18, "axes.labelsize": 17, "xtick.labelsize": 15,
+                     "ytick.labelsize": 15, "legend.fontsize": 14})   # figures are shrunk to page width, so start large
 
 ROOT = Path(__file__).resolve().parent
 MAFIA = ROOT / "bin/mafia"     # MAFIA 1.4 compiled from the FIMI repository source (g++ -O3 src/*.cpp)
@@ -81,7 +83,7 @@ def main():
     m_set = {frozenset(name[i] for i in s): c for s, c in mfi}
     f_set = {frozenset(s): round(v * N) for s, v in zip(fp.itemsets, fp.support)}
     say(f"## min_sup = 1% ({math.ceil(frac*N)} listings)\nMAFIA: {len(m_set)} MFIs in {t_m:.3f}s; "
-        f"mlxtend fpmax: {len(f_set)} MFIs in {t_fp:.2f}s; identical sets and supports: **{m_set == f_set}**\n")
+        f"mlxtend fpmax: {len(f_set)} MFIs in {t_fp:.2f}s; identical sets and supports: {'yes' if m_set == f_set else 'NO'}\n")
     # ---- run time vs support: Apriori (level-wise), FP-growth (pattern growth), MAFIA (depth-first, maximal only)
     sw = pd.DataFrame(sweep); ta, tf_ = [], []
     for fr in sw.min_sup:
@@ -95,22 +97,25 @@ def main():
     ax[0].plot(xs, sw.t_fpgrowth, "s-", label="FP-growth (mlxtend, all FIs)")
     ax[0].plot(xs, sw.t_mfi, "^-", label="MAFIA (C++, MFIs only)")
     ax[0].set(yscale="log", xlabel="minimum support", ylabel="run time (s, log scale)", title="Run time vs minimum support")
-    ax[0].legend(fontsize=8)
+    ax[0].legend(fontsize=10)
     w = 0.27; ix = range(len(sw))
     ax[1].bar([i - w for i in ix], sw.FI, w, label="frequent (FI)")
     ax[1].bar(list(ix), sw.CFI, w, label="closed (CFI)")
     ax[1].bar([i + w for i in ix], sw.MFI, w, label="maximal (MFI)")
     ax[1].set_xticks(list(ix), xs); ax[1].set(yscale="log", xlabel="minimum support", ylabel="itemsets (log scale)",
-                                             title="FI vs CFI vs MFI counts"); ax[1].legend(fontsize=8)
+                                             title="FI vs CFI vs MFI counts"); ax[1].legend(fontsize=10)
     fig.tight_layout(); fig.savefig(OUT / "fig_mafia_sweep.png", dpi=150, bbox_inches="tight"); plt.close(fig)
     say("### Run time vs support\n\n| min_sup | Apriori (s) | FP-growth (s) | MAFIA (s) |\n|---|---|---|---|")
     for r in sw.itertuples():
         say(f"| {r.min_sup:.1%} | {r.t_apriori:.2f} | {r.t_fpgrowth:.2f} | {r.t_mfi:.3f} |")
     say(f"\nApriori time grows {sw.t_apriori.iloc[-1]/sw.t_apriori.iloc[0]:.1f}x from {sw.min_sup.iloc[0]:.0%} to "
-        f"{sw.min_sup.iloc[-1]:.1%} support (candidate generation over more levels); FP-growth grows "
-        f"{sw.t_fpgrowth.iloc[-1]/sw.t_fpgrowth.iloc[0]:.1f}x. MAFIA mines only the maximal border, so its output grows "
+        f"{sw.min_sup.iloc[-1]:.1%} support, because it generates candidates level by level; FP-growth "
+        + (f"stays near {sw.t_fpgrowth.median():.1f} s" if sw.t_fpgrowth.max() < 1.3 * sw.t_fpgrowth.min()
+           else f"grows {sw.t_fpgrowth.iloc[-1]/sw.t_fpgrowth.iloc[0]:.1f}x") +
+        f". MAFIA mines only the maximal border, so its output grows "
         f"from {sw.MFI.iloc[0]} to {sw.MFI.iloc[-1]} itemsets while FIs grow from {sw.FI.iloc[0]} to {sw.FI.iloc[-1]}. "
-        "Times compare implementations (Python libraries vs compiled C++), not only algorithms.\n")
+        "Times compare implementations (Python libraries vs compiled C++), not only algorithms. They come from a "
+        "separate run from Section 4, so the same Apriori job can differ by a few tenths of a second.\n")
 
     rows = sorted(m_set.items(), key=lambda kv: (-len(kv[0]), -kv[1]))
     pd.DataFrame([dict(mfi=" ".join(sorted(s)), size=len(s), support_count=c, support=c / N) for s, c in rows]) \

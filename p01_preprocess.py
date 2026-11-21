@@ -135,7 +135,7 @@ def main():
     say("Label encoding:", {c: i for i, c in enumerate(cats)})
     say("Saved", OUT / "clean.csv", d[keep].shape)
     vocab = pd.Series(" ".join(d["tokens"]).split()).value_counts()
-    say(f"Vocabulary after cleaning: {len(vocab)} tokens; top 15:", vocab.head(15).to_dict())
+    say(f"Vocabulary after cleaning: {len(vocab)} distinct words; listings containing each of the top 15:", vocab.head(15).to_dict())
     (OUT / "preprocess_log.txt").write_text("\n".join(log))
 
 if __name__ == "__main__":

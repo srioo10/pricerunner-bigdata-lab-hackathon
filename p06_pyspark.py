@@ -1,11 +1,8 @@
 """
-p06_pyspark.py -- Big Data lab end-sem exam, question on PySpark.
+Step 6 - Run two of the techniques in PySpark and measure how much faster
+(or slower) Spark is than the single-machine Python libraries.
 
-Task: "Test drive any two of the predictive analytics techniques in PySpark and
-establish the performance enhancement achieved by the big data support from
-PySpark."
-
-We test drive TWO techniques, each on the product-listing data (out/clean.csv,
+Two techniques, both run on the product-listing data (out/clean.csv,
 34,459 listings, 10 categories):
 
   A. Association rules (Apriori family)
@@ -40,8 +37,9 @@ single-threaded Python, not a cluster result, and results.md says so.
 Outputs (all under out/spark/):
   timings.csv           one row per (technique, engine, size, repeat)
   summary.json          every 1x number the report text needs (see write_report)
-  results.md            tables, rules, metrics and the interpretation; every
-                        sentence with a judgement is computed from the numbers
+  results.md            tables, rules, metrics and the interpretation; the
+                        verdicts (faster / slower / break-even) are computed
+                        from the median timings, not typed in
   fig_speedup_arm.png   association-rule time vs data size
   fig_speedup_dt.png    decision-tree time vs data size
   run_log.txt           full console log of the run
@@ -79,6 +77,8 @@ import pandas as pd
 import matplotlib
 matplotlib.use("Agg")                       # headless plotting
 import matplotlib.pyplot as plt
+plt.rcParams.update({"font.size": 17, "axes.titlesize": 18, "axes.labelsize": 17, "xtick.labelsize": 15,
+                     "ytick.labelsize": 15, "legend.fontsize": 14})   # figures are shrunk to page width, so start large
 import matplotlib.ticker
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -119,17 +119,21 @@ def log(*a):
 
 
 # ---------------------------------------------------------------------------
-# Report generation. Everything below works only from the summary dict (ctx)
-# and the timing rows, so results.md can be rebuilt without rerunning Spark,
-# and no sentence carries a number or a judgement that was typed by hand.
+# Report generation. This part reads only the summary dict (ctx) and the
+# timing rows, so --report-only can rebuild results.md without Spark. Numbers
+# and verdicts in the text come from those two inputs, so a new run cannot
+# leave stale claims behind.
 # ---------------------------------------------------------------------------
 SPARK_ENGINE = {"arm": "spark_fpgrowth", "dt": "spark_dt"}
 SINGLE_ENGINES = {"arm": ["mlxtend_apriori", "mlxtend_fpgrowth"], "dt": ["sklearn_dt"]}
-LABEL = {"spark_fpgrowth": "Spark FPGrowth", "mlxtend_apriori": "mlxtend apriori",
-         "mlxtend_fpgrowth": "mlxtend fpgrowth", "spark_dt": "Spark DecisionTree",
+LABEL = {"spark_fpgrowth": "Spark FPGrowth", "mlxtend_apriori": "mlxtend Apriori",
+         "mlxtend_fpgrowth": "mlxtend FP-growth", "spark_dt": "Spark DecisionTree",
          "sklearn_dt": "sklearn DecisionTree"}
-SHORT = {"mlxtend_apriori": "apriori", "mlxtend_fpgrowth": "fpgrowth", "sklearn_dt": "sklearn"}
-TABLE_NAME = {"arm": "association-rule", "dt": "decision-tree"}
+SHORT = {"mlxtend_apriori": "Apriori", "mlxtend_fpgrowth": "FP-growth", "sklearn_dt": "sklearn"}
+TECH_NAME = {"arm": "association rules", "dt": "decision tree"}
+# what one row is in each technique's timing table
+ROW_NAME = {"arm": "listings", "dt": "training listings"}
+NUM_WORD = {0: "none", 1: "one", 2: "two", 3: "three", 4: "four", 5: "five"}
 
 
 def medians(tim):
@@ -196,21 +200,29 @@ def verdict(v):
 
 
 def fmt(s):
-    """Pretty-print an itemset."""
+    """Itemset as {a, b, c}, sorted so the same set always prints the same way."""
     return "{" + ", ".join(sorted(s)) + "}"
 
 
-def compare(med, tech, single):
-    """Spark vs one single-machine engine: a bullet of text plus the facts
-    the later paragraphs need. Every word is chosen from the medians."""
+def size_list(sizes):
+    """[1, 2, 5] -> '1x, 2x and 5x'."""
+    z = [f"{s}x" for s in sizes]
+    return z[0] if len(z) == 1 else ", ".join(z[:-1]) + " and " + z[-1]
+
+
+def compare(med, tech, single, n_freq_items=None):
+    """One paragraph comparing Spark with one single-machine engine, plus the
+    facts the rest of the interpretation needs. The wording branches on the
+    medians (FASTER / SLOWER / CLEAR), so it stays correct if a rerun moves
+    the crossover."""
     st = speedup_table(med, tech)
     spark = SPARK_ENGINE[tech]
     col = "speedup_vs_" + single
     if col not in st or st[col].dropna().empty:
-        return f"- {LABEL[spark]} vs {LABEL[single]}: no comparable runs.", None
+        return f"There are no comparable runs of {LABEL[spark]} and {LABEL[single]}.", None
     sp = st[col].dropna()
     sizes = list(sp.index)
-    rows_of = lambda s: f"{int(st.loc[s, 'rows']):,}"
+    rows_of = lambda s: f"{int(st.loc[s, 'rows']):,} {ROW_NAME[tech]}"
 
     def holds_from(ok):
         """First size from which ok(speedup) is true at that and every larger size."""
@@ -224,52 +236,56 @@ def compare(med, tech, single):
     fast_from = holds_from(lambda v: v > FASTER)
     clear_from = holds_from(lambda v: v >= CLEAR)
     rising = len(sp) > 1 and all(b > a for a, b in zip(sp.values, sp.values[1:]))
-    table = TABLE_NAME[tech]
+    spark_sizes = list(st[spark + "_s"].dropna().index)
+    cut_short = sizes[-1] < spark_sizes[-1]       # the single engine lacks the largest sizes
 
-    steps = "; ".join(f"{sp[s]:.2f}x at {s}x ({verdict(sp[s])})" for s in sizes)
+    steps = size_list(sizes)
+    vals = [f"{sp[s]:.2f} at {s}x" for s in sizes]
+    vals = vals[0] if len(vals) == 1 else ", ".join(vals[:-1]) + " and " + vals[-1]
+    out = [f"Against {LABEL[single]}, the {LABEL[spark]} speedup is {vals}."]
+
     if fast_from is not None and fast_from == sizes[-1]:
-        cross = (f"Spark is faster only at the largest size with a run, {fast_from}x "
-                 f"({rows_of(fast_from)} rows in the {table} table)")
+        where = (f"the largest size at which {SHORT[single]} was run" if cut_short
+                 else "the largest size tested")
+        s = f"Spark is faster only at {fast_from}x ({rows_of(fast_from)}), {where}"
         if clear_from is not None:
-            cross += ", and clearly so (1.5x or more)"
+            s += f", with a speedup of at least {CLEAR:.2f}"
+        out.append(s + ".")
     elif fast_from is not None:
-        cross = (f"Spark is faster from {fast_from}x ({rows_of(fast_from)} rows in the {table} "
-                 f"table) to the largest size tested")
+        s = f"Spark is faster from {fast_from}x ({rows_of(fast_from)}) up to {sizes[-1]}x"
         if clear_from == fast_from:
-            cross += ", and clearly faster (1.5x or more) at all of these sizes"
+            s += f", with a speedup of at least {CLEAR:.2f} at each of these sizes"
         elif clear_from is not None:
-            cross += f", and clearly faster (1.5x or more) from {clear_from}x ({rows_of(clear_from)} rows)"
+            s += f", and the speedup reaches {CLEAR:.2f} or more from {clear_from}x"
+        out.append(s + ".")
     elif faster_at:
-        cross = (f"Spark is faster only at {', '.join(f'{s}x' for s in faster_at)}, "
-                 "not at every larger size, so there is no clean crossover")
+        out.append(f"Spark is faster at {size_list(faster_at)} but not at every larger size, "
+                   "so there is no single crossover size.")
     else:
-        cross = (f"Spark is not faster at any size up to {sizes[-1]}x "
-                 f"({rows_of(sizes[-1])} rows in the {table} table)")
+        if even_at:
+            out.append(f"Spark never beats {SHORT[single]} by more than 5% at any size up to {sizes[-1]}x ({rows_of(sizes[-1])}).")
+        else:
+            out.append(f"Spark is slower at every size up to {sizes[-1]}x ({rows_of(sizes[-1])}).")
+        if rising:
+            out.append(f"The speedup rises at each step, from {sp.iloc[0]:.2f} to {sp.iloc[-1]:.2f}"
+                       + (", so the largest size tested is where the two meet." if sp.iloc[-1] >= SLOWER
+                          else ", but stays below 1 in this run."))
+        if single == "mlxtend_fpgrowth" and n_freq_items is not None:
+            out.append(f"Single-machine FP-growth builds one compressed FP-tree over the "
+                       f"{n_freq_items} frequent items, which stays cheap at {sizes[-1]}x, while "
+                       "Spark FPGrowth pays its per-job overhead plus a shuffle of conditional "
+                       "transactions between partitions.")
     if even_at:
-        cross += f"; break-even (within 5%) at {', '.join(f'{s}x' for s in even_at)}"
-    if rising and sp.iloc[-1] < SLOWER:
-        trend = " The speedup rises at every step, so the gap narrows with size."
-    elif rising:
-        trend = " The speedup rises at every step."
-    elif len(sp) > 1:
-        trend = " The speedup does not rise at every step."
-    else:
-        trend = ""
-    g_single = st.loc[sizes[-1], single + "_s"] / st.loc[sizes[0], single + "_s"]
-    g_spark = st.loc[sizes[-1], spark + "_s"] / st.loc[sizes[0], spark + "_s"]
-    growth = (f" From {sizes[0]}x to {sizes[-1]}x the {LABEL[single]} time grows "
-              f"{g_single:.1f}-fold and the Spark time {g_spark:.1f}-fold.")
-    spark_sizes = list(st[spark + "_s"].dropna().index) if spark + "_s" in st else []
-    missing = [s for s in spark_sizes if s not in sizes]
-    miss = (f" {LABEL[single]} has no run at {', '.join(f'{s}x' for s in missing)} "
-            "(see the note under the table)." if missing else "")
-    text = (f"- {LABEL[spark]} vs {LABEL[single]}: speedup {steps}. {cross}.{trend}{growth}{miss}")
-    best = sp.idxmax()
-    facts = dict(tech=tech, single=single, sp=sp, first=sp.iloc[0], last=sp.iloc[-1],
-                 sizes=sizes, established=bool(faster_at), n_faster=len(faster_at),
-                 best=sp[best], best_size=best, best_rows=rows_of(best), rising=rising,
-                 g_single=g_single, g_spark=g_spark)
-    return text, facts
+        out.append(f"At {size_list(even_at)} the two are within 5% of each other (break-even).")
+
+    a, b = st.loc[sizes[0], single + "_s"], st.loc[sizes[-1], single + "_s"]
+    c, d = st.loc[sizes[0], spark + "_s"], st.loc[sizes[-1], spark + "_s"]
+    out.append(f"Between {sizes[0]}x and {sizes[-1]}x the {SHORT[single]} time goes from "
+               f"{a:.2f} s to {b:.2f} s ({b / a:.2f} times as long) and the Spark time from "
+               f"{c:.2f} s to {d:.2f} s ({d / c:.2f} times).")
+    facts = dict(tech=tech, single=single, first=sp.iloc[0], sizes=sizes,
+                 g_single=b / a, g_spark=d / c)
+    return " ".join(out), facts
 
 
 def write_report(ctx, tim, outdir):
@@ -287,27 +303,29 @@ def write_report(ctx, tim, outdir):
               f"Spark {ctx['spark_version']} in `local[*]` mode, driver memory {ctx['driver_mem']}, "
               f"`spark.sql.shuffle.partitions` = {ctx['npart']}. Python {ctx['python']}, "
               f"pandas {ctx['pandas']}.\n")
-    md.append(f"Spark in `local[*]` mode runs its tasks on all {cores} cores of this one machine. "
-              "mlxtend apriori, mlxtend fpgrowth and sklearn's DecisionTreeClassifier are "
-              "single-threaded. Every speedup below is therefore local multicore Spark against "
-              "single-threaded Python on the same machine, not a cluster result.\n")
-    md.append(f"Spark session start-up: **{ctx['startup_s']:.2f} s**; JVM warm-up runs: "
+
+    # ---- setup: the caveats that apply to every number, stated once ----------
+    md.append("\n## Setup\n")
+    md.append(f"Spark runs in `local[*]` mode on all {cores} cores of this one machine; "
+              "mlxtend Apriori, mlxtend FP-growth and sklearn's DecisionTreeClassifier are "
+              "single-threaded. Every speedup in this report is therefore local multicore Spark "
+              "against single-threaded Python on the same machine, with no network shuffle. It "
+              "is not a cluster result. Speedup = t_single / t_spark, so a value above 1 means "
+              f"Spark is faster. Above {FASTER:.2f} is called faster, below {SLOWER:.2f} slower, "
+              "and anything in between break-even, because repeat timings move by a few percent.\n")
+    md.append(f"The sizes {size_list([z for z in sizes if z > 1])} are the original listings "
+              "replicated k times. Replication multiplies every count by k, so supports, confidences, "
+              "itemsets and learned trees stay the same and only the amount of work grows. The "
+              "study therefore measures throughput, not behaviour on new data.\n")
+    md.append(f"Spark session start-up took {ctx['startup_s']:.2f} s and the JVM warm-up runs "
               f"{ctx['warmup_s']:.2f} s. Both are excluded from every timing below.\n")
 
     # ---- A. association rules ------------------------------------------------
     md.append(f"\n## A. Association rules (minSupport {ms:g}, minConfidence {mc:g})\n")
-    note = ("Spark MLlib has no Apriori implementation, so its FPGrowth stands in as the "
-            "Spark association-rule miner.")
-    if A["same_fi"]:
-        note += (" It finds the same frequent itemsets, with the same counts, as mlxtend's "
-                 "Apriori (agreement check below), so the swap does not change the result.")
-    else:
-        note += (" In this run its frequent itemsets do not match Apriori's (agreement "
-                 "check below).")
-    md.append(note + "\n")
-    md.append("Each listing is one basket: its distinct title tokens plus `cat=<category>`. "
-              f"The thresholds are the ones used in Section 4 (support {ms:.0%}, "
-              f"confidence {mc:.0%}).\n")
+    md.append("Spark MLlib has no Apriori implementation, so its FPGrowth stands in as the "
+              "Spark association-rule miner. Each listing is one basket: its distinct title "
+              f"tokens plus `cat=<category>`. The thresholds are the ones used in Section 4 "
+              f"(support {ms:.0%}, confidence {mc:.0%}).\n")
     n_rows_max = ctx["n_listings"] * max(sizes)
     full_gb = n_rows_max * A["n_items_all"] / 2**30          # 1 byte per bool cell
     md.append(f"Both mlxtend baselines start from the raw baskets and first make Apriori's own "
@@ -316,32 +334,36 @@ def write_report(ctx, tim, outdir):
               "one-hot encoded. This cannot change the result, because no frequent itemset "
               "contains an infrequent item, but it keeps memory down: a one-hot matrix of all "
               f"items at {max(sizes)}x ({n_rows_max:,} rows) would take {full_gb:.1f} GB before "
-              "Apriori builds a single candidate. apriori runs with `low_memory=False`. Section 4 "
-              "(p03) runs apriori on the full one-hot matrix of all items, so its run times are "
+              "Apriori builds a single candidate. Apriori runs with `low_memory=False`. Section 4 "
+              "(p03) runs Apriori on the full one-hot matrix of all items, so its run times are "
               "not comparable with the ones here.\n")
     md.append("| engine | frequent itemsets | rules (all consequent sizes) | rules with 1-item consequent | time at 1x (s, single run) |")
     md.append("|---|---|---|---|---|")
     md.append(f"| Spark FPGrowth | {A['n_fi_spark']} | {A['n_rules_spark']} | {A['n_rules_spark']} | {A['t_spark_1x']:.2f} |")
-    md.append(f"| mlxtend apriori | {A['n_fi_apr']} | {A['n_rules_apr']} | {A['n_rules1_apr']} | {A['t_apr_1x']:.2f} |")
-    md.append(f"| mlxtend fpgrowth | {A['n_fi_fpg']} | {A['n_rules_fpg']} | {A['n_rules1_fpg']} | {A['t_fpg_1x']:.2f} |\n")
+    md.append(f"| mlxtend Apriori | {A['n_fi_apr']} | {A['n_rules_apr']} | {A['n_rules1_apr']} | {A['t_apr_1x']:.2f} |")
+    md.append(f"| mlxtend FP-growth | {A['n_fi_fpg']} | {A['n_rules_fpg']} | {A['n_rules1_fpg']} | {A['t_fpg_1x']:.2f} |\n")
 
     if A["same_fi"]:
-        fi_txt = "the frequent itemsets (with their exact counts) are identical across the three engines"
+        fi_txt = ("The three engines find the same frequent itemsets with the same counts "
+                  f"({A['n_fi_spark']} itemsets).")
     else:
-        fi_txt = (f"the frequent itemsets are NOT identical: {A['fi_mismatch_apr']} itemsets differ "
-                  f"between Spark and apriori and {A['fi_mismatch_fpg']} between Spark and fpgrowth "
-                  "(missing in one engine, or a different count)")
+        fi_txt = (f"The frequent itemsets do not match: {A['fi_mismatch_apr']} itemsets differ "
+                  f"between Spark and Apriori and {A['fi_mismatch_fpg']} between Spark and "
+                  "FP-growth (missing in one engine, or a different count).")
+    cons_txt = (f"Spark's `associationRules` only generates rules with a 1-item consequent, while "
+                "mlxtend generates every consequent size, so Spark reports fewer rules in total "
+                f"({A['n_rules_spark']} against {A['n_rules_apr']}).")
     if A["same_rules"]:
-        r_txt = "restricted to single-item consequents the rule sets are identical"
+        r_txt = (f"Restricted to 1-item consequents, all three engines produce the same "
+                 f"{A['n_rules_spark']} rules")
+        if A.get("max_lift_diff") is not None:
+            r_txt += f", and the largest lift difference on a shared rule is {A['max_lift_diff']:.1e}"
+        r_txt += "."
     else:
-        r_txt = (f"restricted to single-item consequents the rule sets are NOT identical "
-                 f"(Spark {A['n_rules_spark']}, apriori {A['n_rules1_apr']}, fpgrowth "
-                 f"{A['n_rules1_fpg']}; Spark-vs-apriori differences listed below)")
-    lift_txt = (f", and the largest lift difference on a shared rule is {A['max_lift_diff']:.1e}"
-                if A.get("max_lift_diff") is not None else "")
-    md.append(f"Agreement: {fi_txt}. Spark's `associationRules` only produces rules with a "
-              "single-item consequent, which is why it reports fewer rules than mlxtend; "
-              f"{r_txt}{lift_txt}.\n")
+        r_txt = (f"Restricted to 1-item consequents the rule sets do not match (Spark "
+                 f"{A['n_rules_spark']}, Apriori {A['n_rules1_apr']}, FP-growth "
+                 f"{A['n_rules1_fpg']}; the Spark-vs-Apriori differences are listed below).")
+    md.append(f"{fi_txt} {cons_txt} {r_txt}\n")
     if A["rule_diff"]:
         on_edge = all(d["n_a"] and abs(d["n_ac"] / d["n_a"] - mc) < 1e-9 for d in A["rule_diff"])
         md.append("Rules kept by one engine only, with the confidence recomputed from Spark's "
@@ -361,18 +383,37 @@ def write_report(ctx, tim, outdir):
         theirs = (p3["n_itemsets"], p3["n_rules"], p3["n_cat_rules"])
         md.append(f"Comparison with Section 4 (p03, same thresholds): p03 reports {theirs[0]} "
                   f"frequent itemsets, {theirs[1]} rules and {theirs[2]} single-consequent rules "
-                  f"with a `cat=` consequent; mlxtend apriori here gives {mine[0]}, {mine[1]} and "
+                  f"with a `cat=` consequent; mlxtend Apriori here gives {mine[0]}, {mine[1]} and "
                   f"{mine[2]}" + (", the same counts.\n" if mine == theirs
                                   else ". The counts differ, so the two runs do not mine the same rules.\n"))
 
-    md.append("Top 15 rules by lift (Spark output; ties broken by confidence, then support):\n")
+    # Many top rules are reorderings of one phrase ({hewlett, packard, enterprise}
+    # with or without cat=CPUs), so keep one rule per itemset and drop rules that
+    # contain a cat= item; those are counted separately below.
+    pool = A.get("rules_by_lift") or A["top_rules"]
+    seen, shown = set(), []
+    for r in pool:
+        items = frozenset(r["ante"]) | frozenset(r["cons"])
+        if any(i.startswith("cat=") for i in items) or items in seen:
+            continue
+        seen.add(items)
+        shown.append(r)
+        if len(shown) == 15:
+            break
+    src = (f"all {A['n_rules_spark']} Spark rules" if len(pool) >= A["n_rules_spark"]
+           else f"the {len(pool)} highest-lift Spark rules (the only ones this run saved)")
+    md.append(f"{A['n_cat_rules_spark']} of the {A['n_rules_spark']} Spark rules have a `cat=` "
+              "consequent, i.e. they say which title words imply a product category. The table "
+              f"below starts from {src}, sorted by lift with ties broken by confidence, then "
+              "support. It drops every rule that contains a `cat=` item and keeps one rule per "
+              "distinct itemset (antecedent plus consequent), because many high-lift rules are "
+              "reorderings of the same few words.\n")
     md.append("| # | antecedent | consequent | support | confidence | lift |")
     md.append("|---|---|---|---|---|---|")
-    for i, r in enumerate(A["top_rules"], 1):
+    for i, r in enumerate(shown, 1):
         md.append(f"| {i} | {fmt(r['ante'])} | {fmt(r['cons'])} | "
                   f"{r['support']:.4f} | {r['confidence']:.3f} | {r['lift']:.2f} |")
-    md.append(f"\n{A['n_cat_rules_spark']} of the {A['n_rules_spark']} Spark rules have a `cat=` "
-              "consequent, i.e. they say which title words imply a product category.\n")
+    md.append("")
 
     # ---- B. decision tree ----------------------------------------------------
     md.append("\n## B. Decision tree: category from title\n")
@@ -394,9 +435,10 @@ def write_report(ctx, tim, outdir):
     md.append(f"The two trees differ by {d_acc:.2f} points of accuracy and {d_f1:.2f} points of "
               f"macro F1, " + ("within" if dt_same else "outside") +
               f" the {DT_TOL * 100:.0f}-point tolerance used here for \"the same\". "
-              "Train time includes building the vocabulary and the feature matrix. Spark's tree "
-              "searches splits differently from sklearn's (level-wise, on binned features), so "
-              "the two trees are not node-for-node identical.\n")
+              "Spark's tree searches splits differently from sklearn's (level-wise, on binned "
+              "features), so the two trees are not node-for-node identical. Train time includes "
+              "building the vocabulary and the feature matrix; sklearn's tree is fit on a dense "
+              "float32 matrix, and the densify step is inside its timing.\n")
 
     # ---- extra: k-means ------------------------------------------------------
     if K and K.get("ok"):
@@ -416,20 +458,15 @@ def write_report(ctx, tim, outdir):
 
     # ---- scalability ---------------------------------------------------------
     md.append(f"\n## Scalability: data replicated {min(sizes)}x to {max(sizes)}x\n")
-    md.append(f"Median of {repeats} runs per point (min and max in timings.csv). Spark uses all "
-              f"{cores} cores; the single-machine libraries use one. Replicated data are built "
-              "and cached in Spark before the clock starts; the single-machine side starts from "
-              "an in-memory Python list. Speedup = t_single / t_spark; above 1 means Spark is "
-              "faster.\n")
-    md.append("Replicating the data multiplies every count by k, so supports, confidences, the "
-              "itemsets and the learned trees stay the same; only the amount of work grows. "
-              "This measures throughput, not what happens with genuinely new data.\n")
+    md.append(f"Median of {repeats} runs per point (min and max are in timings.csv). Before the "
+              "clock starts, the replicated data are built and cached in Spark; the "
+              "single-machine side starts from an in-memory Python list.\n")
 
     def header(c):
         if c == "rows":
             return "rows"
         if c.startswith("speedup_vs_"):
-            return "x vs " + SHORT[c[len("speedup_vs_"):]]
+            return "speedup vs " + SHORT[c[len("speedup_vs_"):]]
         return LABEL[c[:-2]] + " (s)"
 
     for tech, name in (("arm", "Association rules"), ("dt", "Decision tree (train)")):
@@ -446,17 +483,15 @@ def write_report(ctx, tim, outdir):
                     cells.append("-")
                 elif c == "rows":
                     cells.append(f"{int(v):,}")
-                elif c.startswith("speedup"):
-                    cells.append(f"**{v:.2f}x**")
                 else:
                     cells.append(f"{v:.2f}")
             md.append(f"| {size}x | " + " | ".join(cells) + " |")
     for key, size in ctx["stopped"].items():
-        md.append(f"\nSeries {key} stopped at {size}x (one run took longer than "
-                  f"{ctx['time_limit']:.0f} s).")
+        md.append(f"\n{LABEL[key.split('/')[1]]} was not run beyond {size}x because one run "
+                  f"there took longer than {ctx['time_limit']:.0f} s.")
     for key, zs in ctx["mem_skipped"].items():
-        md.append(f"\nSeries {key} skipped at {', '.join(f'{z}x' for z in zs)}: its projected "
-                  "peak memory was above 60% of the free RAM.")
+        md.append(f"\n{LABEL[key.split('/')[1]]} was not run at {size_list(zs)} because its "
+                  "projected peak memory was above 60% of the free RAM.")
 
     # peak memory: one row per engine, at the largest size it ran
     big = med.sort_values("size").groupby(["technique", "engine"]).tail(1) \
@@ -464,12 +499,12 @@ def write_report(ctx, tim, outdir):
     md.append("\n### Peak memory at the largest size each engine ran\n")
     md.append("Peak resident set (VmHWM, reset before each run, max over repeats) of the Python "
               "process and of the Spark JVM, which in local mode is both driver and executor. "
-              "The JVM column is only meaningful for Spark rows; for mlxtend/sklearn rows it is "
-              "the idle Spark JVM that stays alive alongside.\n")
+              "The JVM column is only meaningful for Spark rows; for mlxtend and sklearn rows it "
+              "is the idle Spark JVM that stays alive alongside.\n")
     md.append("| technique | engine | size | rows | peak Python MB | peak JVM MB |")
     md.append("|---|---|---|---|---|---|")
     for r in big.itertuples():
-        md.append(f"| {r.technique} | {r.engine} | {r.size}x | {int(r.rows):,} | "
+        md.append(f"| {TECH_NAME[r.technique]} | {LABEL[r.engine]} | {r.size}x | {int(r.rows):,} | "
                   f"{r.peak_py_mb:.0f} | {r.peak_jvm_mb:.0f} |")
     sgl = big[~big.engine.isin(SPARK_ENGINE.values())]
     spk = big[big.engine.isin(SPARK_ENGINE.values())]
@@ -485,106 +520,68 @@ def write_report(ctx, tim, outdir):
 
     # ---- interpretation ------------------------------------------------------
     md.append("\n## Interpretation\n")
-    md.append("Measured crossovers (from the median timings; above 1.05x is called faster, "
-              "below 0.95x slower, in between break-even):\n")
-    facts = []
+    paras, facts = [], []
     for tech in ("arm", "dt"):
         for single in SINGLE_ENGINES[tech]:
-            text, f = compare(med, tech, single)
-            md.append(text)
+            text, f = compare(med, tech, single, A["n_freq_items"])
+            paras.append(text)
             if f:
                 facts.append(f)
-    md.append("")
 
-    # what is established
-    est = []
-    for f in facts:
-        what = ("Decision tree vs sklearn" if f["tech"] == "dt"
-                else f"Association rules vs {LABEL[f['single']]}")
-        if f["established"]:
-            est.append(f"{what}: yes, Spark is faster at {f['n_faster']} of {len(f['sizes'])} "
-                       f"sizes, best {f['best']:.2f}x at {f['best_size']}x ({f['best_rows']} rows).")
-        else:
-            est.append(f"{what}: no, Spark is not faster at any size tested "
-                       f"(best {f['best']:.2f}x at {f['best_size']}x).")
-    md.append("**What is established.** " + " ".join(est) +
-              f" All of these compare local multicore Spark ({cores} cores) with single-threaded "
-              "Python on one machine.\n")
-
-    # same output: only if every agreement check passed; otherwise say which failed
+    # the speedups only mean something if both sides produced the same output
     if A["same_fi"] and A["same_rules"] and dt_same:
-        md.append("**Same output.** Spark and the single-machine libraries find the same frequent "
-                  "itemsets with the same counts, the same single-consequent rules with the same "
-                  f"lift, and decision trees within {DT_TOL * 100:.0f} point of each other in test "
-                  "accuracy and macro F1. PySpark changes how the work is executed, not what is "
-                  "learned.\n")
+        md.append("Spark and the single-machine libraries produce the same output here (same "
+                  "frequent itemsets and 1-item-consequent rules; trees within "
+                  f"{DT_TOL * 100:.0f} point in accuracy and macro F1), so the speedups compare "
+                  "like with like.\n")
     else:
         bad = []
         if not A["same_fi"]:
-            bad.append(f"frequent itemsets differ ({A['fi_mismatch_apr']} vs apriori, "
-                       f"{A['fi_mismatch_fpg']} vs fpgrowth)")
+            bad.append(f"frequent itemsets differ ({A['fi_mismatch_apr']} vs Apriori, "
+                       f"{A['fi_mismatch_fpg']} vs FP-growth)")
         if not A["same_rules"]:
-            bad.append(f"single-consequent rules differ (Spark {A['n_rules_spark']}, apriori "
-                       f"{A['n_rules1_apr']}, fpgrowth {A['n_rules1_fpg']})")
+            bad.append(f"1-item-consequent rules differ (Spark {A['n_rules_spark']}, Apriori "
+                       f"{A['n_rules1_apr']}, FP-growth {A['n_rules1_fpg']})")
         if not dt_same:
             bad.append(f"the trees differ by {d_acc:.2f} accuracy points and {d_f1:.2f} macro-F1 "
                        "points")
-        md.append("**Output agreement check failed:** " + "; ".join(bad) + ".\n")
+        md.append("The output agreement check failed: " + "; ".join(bad) + ". The speedups "
+                  "below compare runs whose outputs are not the same.\n")
 
-    # small data
+    # small data: the fixed per-job cost, without repeating the 1x numbers
     first = [f for f in facts if f["sizes"][0] == min(sizes)]
     if first and all(f["first"] < SLOWER for f in first):
-        n_single_1x = med[(med["size"] == min(sizes)) & ~med.engine.isin(SPARK_ENGINE.values())]
-        n_below = int((n_single_1x.median_s < ctx["startup_s"]).sum())
-        md.append(f"**Small data: Spark is slower.** At {min(sizes)}x Spark is slower in every "
-                  f"comparison ({', '.join('%.2fx' % f['first'] for f in first)}). Every Spark job "
-                  "pays a fixed cost: building the query plan, scheduling tasks on "
-                  f"{ctx['npart']} partitions, moving rows between JVM threads, and (for the tree) "
-                  "one pass over the data per tree level. mlxtend and sklearn work on one "
-                  "in-memory array without that. Spark session start-up "
-                  f"({ctx['startup_s']:.1f} s) is not in these timings; in a real script it comes "
-                  f"on top, and it is longer than {n_below} of the {len(n_single_1x)} "
-                  f"single-machine runs at {min(sizes)}x.\n")
+        single_1x = med[(med["size"] == min(sizes)) & ~med.engine.isin(SPARK_ENGINE.values())]
+        n_below = int((single_1x.median_s < ctx["startup_s"]).sum())
+        n_all = len(single_1x)
+        if n_below == n_all:
+            vs = f"longer than every single-machine run at {min(sizes)}x"
+        elif n_below == 0:
+            vs = f"shorter than every single-machine run at {min(sizes)}x"
+        else:
+            vs = (f"longer than {NUM_WORD.get(n_below, n_below)} of the "
+                  f"{NUM_WORD.get(n_all, n_all)} single-machine runs at {min(sizes)}x")
+        md.append(f"At {min(sizes)}x Spark is slower in all {NUM_WORD.get(len(first), len(first))} "
+                  "comparisons. Each Spark job has a fixed cost: building the query plan, "
+                  f"scheduling tasks on {ctx['npart']} partitions, moving rows between JVM "
+                  "threads and, for the tree, one pass over the data per tree level. mlxtend and "
+                  "sklearn work on one in-memory array and skip all of that. A real script also "
+                  f"pays the {ctx['startup_s']:.2f} s session start-up, which on its own is {vs}.\n")
     elif first:
-        md.append(f"**Small data.** At {min(sizes)}x Spark is " +
-                  ", ".join(f"{verdict(f['first'])} than {LABEL[f['single']]} ({f['first']:.2f}x)"
-                            for f in first) + ".\n")
+        md.append(f"At {min(sizes)}x Spark is " +
+                  ", ".join(f"{verdict(f['first'])} than {LABEL[f['single']]}" for f in first) +
+                  ".\n")
 
-    # larger data: amortisation claimed only where Spark's time grew less
+    for p in paras:
+        md.append(p + "\n")
+
     slow_growth = [f for f in facts if f["g_spark"] < f["g_single"]]
-    if slow_growth:
-        md.append("**Larger data: the fixed cost is spread over more work.** Over the sizes "
-                  "tested Spark's time grows less than the single-machine time (" +
-                  "; ".join(f"{f['g_spark']:.1f}-fold vs {f['g_single']:.1f}-fold for "
-                            f"{LABEL[f['single']]}" for f in slow_growth) +
-                  f"). This is consistent with Spark spreading the work over {cores} cores while "
-                  "the baselines use one. Where a speedup crosses 1.05x is the size at which PySpark "
-                  "starts to pay off on this machine.\n")
-
-    # comparisons Spark never wins
-    for f in facts:
-        if f["established"]:
-            continue
-        why = ""
-        if f["single"] == "mlxtend_fpgrowth":
-            why = ("Single-machine FP-growth builds one compressed FP-tree over the "
-                   f"{A['n_freq_items']} frequent items, which stays cheap at "
-                   f"{f['sizes'][-1]}x; Spark FPGrowth pays its per-job overhead plus a shuffle "
-                   "of conditional transactions between partitions. ")
-        trend = (f"The speedup rises at every step ({f['first']:.2f}x to {f['last']:.2f}x), so "
-                 "the gap narrows, but this run shows no crossover; one may lie beyond "
-                 f"{f['sizes'][-1]}x." if f["rising"] else
-                 "The speedup does not rise at every step, so these sizes give no basis for "
-                 "predicting a crossover.")
-        md.append(f"**Slower at every size against {LABEL[f['single']]}.** {why}{trend}\n")
-
-    md.append("**Limits of this test.** It is one machine (local mode, no network shuffle), so it "
-              "shows multi-core parallelism and memory behaviour, not cluster scale-out. "
-              "Replicated data has the same patterns as the original, which keeps the results "
-              "comparable across sizes but is kinder to both engines than new data would be. The "
-              "single-machine baselines are reasonable but not tuned to the limit: the sklearn "
-              "tree is fit on a dense float32 matrix (densifying is inside the timing), and "
-              "neither mlxtend nor sklearn's tree uses more than one core.\n")
+    if slow_growth and len(slow_growth) == len(facts):
+        md.append("In every comparison the Spark time grows more slowly with data size than the "
+                  "single-machine time, which fits the work being split across cores.\n")
+    elif slow_growth:
+        md.append("The Spark time grows more slowly with data size than the single-machine time "
+                  "only against " + ", ".join(LABEL[f["single"]] for f in slow_growth) + ".\n")
 
     with open(os.path.join(outdir, "results.md"), "w") as fh:
         fh.write("\n".join(md))
@@ -920,7 +917,8 @@ for k in spark_rules ^ apr_rules:
     rule_diff.append(d)
     log("  rule difference ->", d)
 
-top = spark_rules_pd.sort_values(["lift", "confidence", "support"], ascending=False).head(15)
+by_lift = spark_rules_pd.sort_values(["lift", "confidence", "support"], ascending=False)
+top = by_lift.head(15)
 log("\nTop 15 rules by lift:")
 for i, r in enumerate(top.itertuples(), 1):
     log(f"{i:2d}. {fmt(r.antecedent) + ' -> ' + fmt(r.consequent):60s} "
@@ -938,9 +936,12 @@ ctx["arm"] = dict(
     max_lift_diff=max_lift_diff, rule_diff=rule_diff,
     n_cat_rules_spark=sum(1 for c in spark_rules_pd["consequent"] if is_cat1(c)),
     n_cat_rules_apr=int(apr_rules1["consequents"].apply(is_cat1).sum()),
-    top_rules=[dict(ante=sorted(r.antecedent), cons=sorted(r.consequent),
-                    support=float(r.support), confidence=float(r.confidence), lift=float(r.lift))
-               for r in top.itertuples()])
+    # every rule, sorted by lift: the report dedupes them by itemset, and the top
+    # 15 alone are mostly reorderings of one phrase
+    rules_by_lift=[dict(ante=sorted(r.antecedent), cons=sorted(r.consequent),
+                        support=float(r.support), confidence=float(r.confidence),
+                        lift=float(r.lift))
+                   for r in by_lift.itertuples()])
 log(f"category rules (single cat= consequent): Spark {ctx['arm']['n_cat_rules_spark']}, "
     f"apriori {ctx['arm']['n_cat_rules_apr']}")
 

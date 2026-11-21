@@ -128,7 +128,7 @@ def main():
     lib = {frozenset(s): round(v * len(Tm)) for s, v in zip(fi_m.itemsets, fi_m.support)}
     same = lib == own
     say(f"\n## Cross-check (TVs, min_sup 10%)\nmlxtend: {len(lib)} itemsets (longest {max(map(len, lib))} items) in {t_lib:.3f}s; "
-        f"own Apriori: {len(own)} itemsets in {t_own:.3f}s; identical itemsets and support counts: **{same}**")
+        f"own Apriori: {len(own)} itemsets in {t_own:.3f}s; identical itemsets and support counts: {'yes' if same else 'NO'}")
     (OUT / "arm_summary.md").write_text("\n".join(md))
 
 if __name__ == "__main__":

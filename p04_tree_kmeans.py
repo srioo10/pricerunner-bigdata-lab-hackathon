@@ -14,10 +14,13 @@ K-Means
   dendrograms: agglomerative: Ward on the 10 category centroids; average link + cosine on a 60-listing sample
 Outputs: out/model/*.png, out/model/model_summary.md
 """
+import re
 import time
 import numpy as np, pandas as pd
 import matplotlib; matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+plt.rcParams.update({"font.size": 17, "axes.titlesize": 18, "axes.labelsize": 17, "xtick.labelsize": 15,
+                     "ytick.labelsize": 15, "legend.fontsize": 14})   # figures are shrunk to page width, so start large
 from pathlib import Path
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.feature_selection import SelectKBest, chi2
@@ -51,7 +54,7 @@ def tree_rules(clf, names, classes, max_rules=25, min_samples=100):
         if t.feature[node] == _tree.TREE_UNDEFINED:
             counts = t.value[node][0]; n = int(t.n_node_samples[node])
             k = int(np.argmax(counts)); purity = counts[k] / counts.sum()
-            rules.append((n, purity, conds, classes[k])); return
+            rules.append((n, purity, conds, classes[k], node)); return
         w = names[t.feature[node]]          # binary feature: <=0.5 means word absent
         walk(t.children_left[node], conds + [("-", w)])
         walk(t.children_right[node], conds + [("+", w)])
@@ -84,7 +87,9 @@ def main():
         kres[k] = sc.mean(); say(f"| {k} | {sc.mean():.4f} +- {sc.std():.4f} |")
     best_f = max(kres.values())
     K = next(k for k in (250, 500, 1000, "all") if kres[k] >= best_f - 0.002)    # smallest k within 0.002 of the best
-    say(f"\nChosen: k = {K} (smallest vocabulary within 0.002 macro-F1 of the best CV score).\n")
+    say(f"\nRule: keep the smallest vocabulary whose CV score is within 0.002 of the best. "
+        + ("No smaller vocabulary comes that close, so all words are kept and chi-square selection is not applied.\n"
+           if K == "all" else f"That gives k = {K}.\n"))
 
     def featurize(train_rows):
         """Vocabulary + chi2 selection are fitted on TRAINING rows only (no test leakage)."""
@@ -118,8 +123,9 @@ def main():
     bestrow = g.loc[g.mean_test_score.idxmax()]
     say(f"\nSelected by CV: {bp} (CV macro F1 {gs.best_score_:.4f}). Validation F1 rises with depth "
         f"({g[(g.max_depth == 5) & (g.criterion == bp['criterion'])].mean_test_score.max():.4f} at depth 5 with {bp['criterion']} -> {gs.best_score_:.4f} for the selected tree); the selected tree's "
-        f"train-validation gap is {(gap := bestrow.mean_train_score - bestrow.mean_test_score):.3f}"
-        f"{' (the tree fits the training folds almost perfectly but still generalises well)' if gap < 0.1 else ', a clear overfit'}.\n")
+        f"mean F1 is {bestrow.mean_train_score:.3f} on the training folds and {bestrow.mean_test_score:.3f} on the validation folds.\n")
+    say(f"The data-selection table above scores the same tree at {kres['all']:.4f} rather than {gs.best_score_:.4f}: there the "
+        "vocabulary is rebuilt inside every fold, while the grid search reuses one vocabulary built on all training rows.\n")
 
     clf = gs.best_estimator_
     pred = clf.predict(Xte)
@@ -142,9 +148,9 @@ def main():
     say("| model (same features, stratified split) | accuracy | macro F1 |\n|---|---|---|\n"
         f"| Decision tree (selected) | {acc_s:.4f} | {F_s:.4f} |\n" +
         "\n".join(f"| {n_} | {a_:.4f} | {F_:.4f} |" for n_, a_, F_ in nb_rows) + "\n")
-    d_ = 100 * (acc_s - acc_g)
+    d_ = 100 * (round(acc_s, 4) - round(acc_g, 4))
     say(f"The grouped split never shows the classifier another listing of a test product. Accuracy is {d_:.2f} points "
-        f"lower on it{', so the score does not depend on having seen other listings of the same product' if d_ < 2 else ', so part of the stratified score comes from seeing other listings of the same product'}.\n")
+        f"lower on it, so seeing other listings of the same product adds {'under 1 point' if d_ < 1 else f'{d_:.1f} points'} to the stratified score.\n")
 
     cm = confusion_matrix(yte, pred, labels=classes)
     fig, ax = plt.subplots(figsize=(9, 8))
@@ -165,11 +171,13 @@ def main():
     fig.savefig(OUT / "dt_importance.png", dpi=150, bbox_inches="tight"); plt.close(fig)
     say("Top 10 important words: " + ", ".join(f"{k} ({v:.3f})" for k, v in imp.head(10).items()) + "\n")
     say(f"Importance inference: the top 10 words carry {imp.head(10).sum():.1%} of the total importance, and each is a "
-        "product-type noun; brand words matter little because most brands sell in several categories.\n")
+        "product-type word (fridge, tv, intel, camera) rather than a brand.\n")
 
     # IF-THEN rules straight from the TUNED tree that was evaluated above: every root-to-leaf path is a rule
-    fig, ax = plt.subplots(figsize=(16, 7))
-    plot_tree(clf, max_depth=2, feature_names=list(names), class_names=classes, filled=True, impurity=True, fontsize=7, ax=ax)
+    fig, ax = plt.subplots(figsize=(18, 7))
+    plot_tree(clf, max_depth=2, feature_names=list(names), class_names=classes, filled=True, impurity=False, label='root', fontsize=12, ax=ax)
+    for t in ax.texts:                                     # the 10 class counts per node overlap; the class line says enough
+        t.set_text(re.sub(r"\n(value = )?\[[^\]]*\]", "", t.get_text(), flags=re.S))
     ax.set_title(f"Tuned decision tree ({bp['criterion']}, {clf.get_n_leaves()} leaves, depth {clf.get_depth()}); top 2 levels drawn")
     fig.savefig(OUT / "dt_tree.png", dpi=150, bbox_inches="tight"); plt.close(fig)
     rules = tree_rules(clf, names, classes, max_rules=25, min_samples=100)
@@ -188,10 +196,14 @@ def main():
     short = [r for r in rules if len(r[2]) <= 8]          # rules short enough to read in full
     say(f"{len(short)} of these {len(rules)} rules have at most 8 conditions and are printed in full below; the other "
         f"{len(rules) - len(short)} need 9-{max(len(r[2]) for r in rules)} conditions (mostly long 'none of' lists that "
-        "exclude other categories), which is the price of a tree that is accurate rather than small.\n")
-    say("| # | IF | THEN category | training listings | purity |\n|---|---|---|---|---|")
-    for k, (n, pur, conds, c) in enumerate(short, 1):
-        say(f"| {k} | {rule_text(conds)} | {c} | {n} | {pur:.3f} |")
+        "exclude other categories).\n")
+    te_leaf = clf.apply(Xte)                              # which leaf (= which rule) each test listing falls into
+    def test_cols(node, c):
+        hit = te_leaf == node
+        return f"{hit.sum()} | {(yte[hit] == c).mean():.3f}" if hit.any() else "0 | -"
+    say("| # | IF | THEN category | training listings | purity | test listings | test accuracy |\n|---|---|---|---|---|---|---|")
+    for k, (n, pur, conds, c, node) in enumerate(short, 1):
+        say(f"| {k} | {rule_text(conds)} | {c} | {n} | {pur:.3f} | {test_cols(node, c)} |")
     # one rule per category, so every class gets an explicit IF-THEN rule: the shortest pure leaf (>= 30 listings)
     allr = tree_rules(clf, names, classes, max_rules=10**6, min_samples=30)
     say("\n### Shortest rule for each category (leaf with >= 30 training listings, purity >= 0.9)\n")
@@ -200,7 +212,7 @@ def main():
         rc = [r for r in allr if r[3] == c]
         if not rc:
             say(f"| {c} | no leaf meets the threshold | - | - | - |"); continue
-        n, pur, conds, _ = min(rc, key=lambda r: (len(r[2]), -r[0]))
+        n, pur, conds, _, _ = min(rc, key=lambda r: (len(r[2]), -r[0]))
         say(f"| {c} | {rule_text(conds)} | {len(conds)} | {n} | {pur:.3f} |")
     say(f"\nReading the rules: a single strong word decides most categories ({', '.join(sorted({r[3] for r in short}))}); "
         "the 'none of' parts stop a listing that also mentions another product type (e.g. a 'tv' bundle with a "
@@ -217,10 +229,9 @@ def main():
         f"| raw titles (no cleaning) | {Xr.shape[1]} words | {acc_r:.4f} | {F_r:.4f} | {raw_tree.get_n_leaves()} | {acc_rg:.4f} |\n"
         f"| cleaned tokens{'' if K == 'all' else f' + chi2 top-{K}'} | {X.shape[1]} words | {acc_s:.4f} | {F_s:.4f} | {clf.get_n_leaves()} | {acc_g:.4f} |\n")
     dl = raw_tree.get_n_leaves() - clf.get_n_leaves()
-    say(f"Cleaning changes accuracy by {100*(acc_s-acc_r):+.2f} points on the stratified split and "
-        f"{100*(acc_g-acc_rg):+.2f} on unseen products, with {Xr.shape[1]/X.shape[1]:.1f}x fewer features and a tree "
-        f"with {abs(dl)} {'fewer' if dl > 0 else 'more'} leaves. So cleaning mainly makes the model smaller "
-        f"{'at no cost in accuracy' if acc_s >= acc_r - 0.002 else 'at a small cost in accuracy'}.\n")
+    say(f"Cleaning changes accuracy by {100*(round(acc_s,4)-round(acc_r,4)):+.2f} points on the stratified split and "
+        f"{100*(round(acc_g,4)-round(acc_rg,4)):+.2f} on unseen products, uses {1 - X.shape[1]/Xr.shape[1]:.0%} fewer words, and gives a tree "
+        f"with {abs(dl)} {'fewer' if dl > 0 else 'more'} leaves. The gain from cleaning is a smaller model, not higher accuracy.\n")
 
     # ---------------- K-MEANS ----------------
     say("\n# K-Means clustering (labels not used for fitting)\n")
@@ -235,7 +246,7 @@ def main():
         sse.append(km.inertia_); sil.append(silhouette_score(Z[samp], km.labels_[samp]))
     fig, ax = plt.subplots(1, 2, figsize=(11, 4))
     ax[0].plot(ks, sse, "o-"); ax[0].set(title="Elbow: SSE vs k", xlabel="k", ylabel="SSE (inertia)")
-    ax[1].plot(ks, sil, "o-", color="C1"); ax[1].set(title="Silhouette vs k (6000-pt sample)", xlabel="k", ylabel="silhouette")
+    ax[1].plot(ks, sil, "o-", color="C1"); ax[1].set(title="Silhouette vs k (6000-listing sample, Euclidean on L2-normalised LSA = cosine)", xlabel="k", ylabel="silhouette")
     fig.savefig(OUT / "km_elbow_silhouette.png", dpi=150, bbox_inches="tight"); plt.close(fig)
     pd.DataFrame(dict(k=ks, sse=sse, silhouette=sil)).to_csv(OUT / "km_k_sweep.csv", index=False)
     kbest = ks[int(np.argmax(sil))]
@@ -243,7 +254,7 @@ def main():
     s10 = sil[ks.index(10)]
     say(f"\nThe elbow has no sharp bend, and silhouette stays low for every k (range {min(sil):.3f}-{max(sil):.3f}; best k={kbest}"
         f"{', the edge of the grid' if kbest == ks[-1] else ''}). So the title space has no clear natural number of clusters. "
-        f"**Choice: k=10.** Because no k stands out, the granularity is set by the task: 10 is the number of product "
+        f"I use k=10. Because no k stands out, the granularity is set by the task: 10 is the number of product "
         f"categories, which lets the clusters be read against them. Its silhouette ({s10:.3f}) is {s10/max(sil):.0%} of the best value. "
         f"The labels are used only for this granularity and for scoring, never to fit the clusters.\n")
 
@@ -258,20 +269,25 @@ def main():
     say(f"k=10: fit {tkm:.2f}s, SSE {km.inertia_:.1f}, silhouette {silhouette_score(Z[samp], lab[samp]):.4f}, "
         f"purity {purity:.4f}, ARI {adjusted_rand_score(y, lab):.4f}, NMI {normalized_mutual_info_score(y, lab):.4f}\n")
     # sensitivity: k-means is seed-dependent and the LSA size is a free choice -> report spread, choose nothing by labels
-    say("### Sensitivity of the k=10 comparison (labels used only to score, never to choose)\n")
-    rs = [KMeans(10, n_init=10, random_state=sd).fit(Z).labels_ for sd in range(5)]
+    say("## Sensitivity of the k=10 comparison (labels used only to score, never to choose)\n")
+    seeds = [42, 0, 1, 2, 3]                              # 42 is the run reported above
+    rs = [KMeans(10, n_init=10, random_state=sd).fit(Z).labels_ for sd in seeds]
     nm = [normalized_mutual_info_score(y, l) for l in rs]; ar = [adjusted_rand_score(y, l) for l in rs]
     pu = [pd.crosstab(l, y).max(axis=1).sum() / len(df) for l in rs]; big = [np.bincount(l).max() for l in rs]
     say(f"Over 5 seeds (LSA-100): NMI {np.mean(nm):.3f} +- {np.std(nm):.3f}, ARI {np.mean(ar):.3f} +- {np.std(ar):.3f}, "
-        f"purity {np.mean(pu):.3f} +- {np.std(pu):.3f}. The largest cluster holds {min(big)}-{max(big)} listings across these seeds.\n")
+        f"purity {np.mean(pu):.3f} +- {np.std(pu):.3f} (NMI range {min(nm):.3f}-{max(nm):.3f}; the seed-42 run above is "
+        f"{'the lowest' if nm[0] == min(nm) else 'the highest' if nm[0] == max(nm) else 'inside the range'}). "
+        f"The largest cluster holds {min(big)}-{max(big)} listings across these seeds.\n")
     say("| LSA dimensions | explained variance | silhouette (k=10) | NMI (k=10) |\n|---|---|---|---|")
+    nmi_dim = []
     for dim in (20, 50, 100, 200):
         sv = TruncatedSVD(dim, random_state=42); Zd = normalize(sv.fit_transform(T))
         ld = KMeans(10, n_init=10, random_state=42).fit(Zd).labels_
-        say(f"| {dim} | {sv.explained_variance_ratio_.sum():.3f} | {silhouette_score(Zd[samp], ld[samp]):.4f} | {normalized_mutual_info_score(y, ld):.4f} |")
-    say("\nSilhouette values from spaces of different dimension are not directly comparable, so this table is not used "
-        "to pick a dimension; it shows that the agreement with the categories moves by a few NMI points with the LSA "
-        "size, like it does with the seed. The k=10 figures above should be read with that spread.\n")
+        nmi_dim.append(normalized_mutual_info_score(y, ld))
+        say(f"| {dim} | {sv.explained_variance_ratio_.sum():.3f} | {silhouette_score(Zd[samp], ld[samp]):.4f} | {nmi_dim[-1]:.4f} |")
+    say(f"\nSilhouette values from spaces of different dimension are not directly comparable, so this table is not used "
+        f"to pick a dimension. NMI moves between {min(nmi_dim):.3f} and {max(nmi_dim):.3f} with the LSA size and between "
+        f"{min(nm):.3f} and {max(nm):.3f} with the seed, so a single k=10 run should be read with that spread.\n")
     terms = np.array(tf.get_feature_names_out())
     say("| cluster | size | majority category (share) | top TF-IDF terms |\n|---|---|---|---|")
     for c in range(10):
@@ -290,7 +306,7 @@ def main():
     fig, ax = plt.subplots(figsize=(10, 6))
     im = ax.imshow(np.log1p(ct.values), cmap="viridis", aspect="auto")
     ax.set_xticks(range(len(ct.columns)), ct.columns, rotation=45, ha="right"); ax.set_yticks(range(10), [f"C{c}" for c in range(10)])
-    for (a, b), v in np.ndenumerate(ct.values): ax.text(b, a, v, ha="center", va="center", color="w", fontsize=7)
+    for (a, b), v in np.ndenumerate(ct.values): ax.text(b, a, v, ha="center", va="center", color="w", fontsize=10)
     ax.set_title("K-Means (k=10) clusters vs true categories"); fig.colorbar(im, label="log(1+count)")
     fig.savefig(OUT / "km_vs_category.png", dpi=150, bbox_inches="tight"); plt.close(fig)
     P2 = TruncatedSVD(2, random_state=0).fit_transform(Z[samp])
@@ -314,22 +330,27 @@ def main():
     last_single = [names_c[int(a)] for a, b, _, _ in Lc[-1:] for a in (a, b) if int(a) < len(classes)]
     say(f"\nDendrogram inferences:\n- The closest categories are {first[0]} and {first[1]} (first merge, height {Lc[0, 2]:.3f}); "
         f""
-        + (f"the pair the tree confuses most ({classes[ci]} -> {classes[cj]}) falls in the same 3-group branch.\n"
-           if g3[classes.index(classes[ci])] == g3[classes.index(classes[cj])] else "\n")
+        + (f"{classes[ci]} joins them at the next merge ({Lc[1, 2]:.3f}), and {classes[ci]} -> {classes[cj]} is also the tree's most frequent error.\n"
+           if classes[ci] in names_c[len(classes) + 1] and names_c[len(classes)] in names_c[len(classes) + 1] else "\n")
         + f"- The last merge is at {Lc[-1, 2]:.3f}, {Lc[-1, 2]/Lc[0, 2]:.1f}x the first; "
         + (f"{last_single[0]} joins last, so its vocabulary is the most distinct. " if last_single else "") +
         "Cutting the tree into 3 groups gives: " + "; ".join(
             "{" + ", ".join(np.array(classes)[g3 == k]) + "}" for k in np.unique(g3)) + ".\n")
     idx = np.concatenate([rng.choice(np.where(y == c)[0], 6, replace=False) for c in classes])
     Ls = linkage(Z[idx], method="average", metric="cosine")
-    fig, ax = plt.subplots(figsize=(14, 5))
-    dendrogram(Ls, labels=[c[:10] for c in y[idx]], leaf_font_size=7, ax=ax)
-    ax.set_title("Dendrogram of 60 listings (6 per category), average link, cosine distance")
+    fig, ax = plt.subplots(figsize=(7, 11))   # horizontal, so each of the 60 leaf labels gets its own line
+    SHORT = {"CPUs": "CPU", "Digital Cameras": "CAM", "Dishwashers": "DW", "Freezers": "FZ", "Fridge Freezers": "FF",
+             "Fridges": "FR", "Microwaves": "MW", "Mobile Phones": "PH", "TVs": "TV", "Washing Machines": "WM"}
+    CODE = {c: SHORT.get(c, c[:3].upper()) for c in classes}
+    dendrogram(Ls, labels=[CODE[c] for c in y[idx]], orientation="left", leaf_font_size=11, ax=ax)
+    ax.set_xlabel("cosine distance")
+    ax.set_title("60 listings (6 per category), average link")
     fig.savefig(OUT / "dendro_sample.png", dpi=150, bbox_inches="tight"); plt.close(fig)
     coph = squareform(cophenet(Ls)); np.fill_diagonal(coph, np.inf)
     same = np.mean(y[idx][coph.argmin(1)] == y[idx])      # nearest leaf in the dendrogram has the same category?
     say(f"- 60-listing dendrogram (average link, cosine): for {same:.0%} of the listings the closest leaf in the tree "
-        "has the same category, so whole listings cluster by category even without labels.\n")
+        f"has the same category, against {5/59:.0%} expected by chance (6 listings per category). On this small sample, "
+        "listings group by category without the labels being used.\n")
     (OUT / "model_summary.md").write_text("\n".join(md))
 
 if __name__ == "__main__":
