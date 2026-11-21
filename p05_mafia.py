@@ -27,6 +27,13 @@ ROOT = Path(__file__).resolve().parent
 MAFIA = ROOT / "bin/mafia"     # MAFIA 1.4 compiled from the FIMI repository source (g++ -O3 src/*.cpp)
 OUT = ROOT / "out/mafia"; OUT.mkdir(parents=True, exist_ok=True)
 md = []
+def timed(fn, reps=3):
+    """Run fn reps times; return its result and the median wall time (one run moves by a few tenths of a second)."""
+    ts = []
+    for _ in range(reps):
+        t0 = time.perf_counter(); out = fn(); ts.append(time.perf_counter() - t0)
+    return out, sorted(ts)[len(ts) // 2]
+
 def say(s=""):
     """Print a line and append it to mafia_summary.md (the report includes that file)."""
     print(s); md.append(s)
@@ -35,9 +42,7 @@ def run_mafia(mode, dat, frac):
     """mode: -mfi | -fci | -fi ; frac: relative support (MAFIA uses ceil(frac*N))."""
     res = OUT / f"mafia{mode}_{frac}.txt"
     res.unlink(missing_ok=True)                        # MAFIA may write nothing when no itemset is frequent
-    t0 = time.perf_counter()
-    subprocess.run([str(MAFIA), mode, str(frac), "-ascii", str(dat), str(res)], check=True, capture_output=True)
-    t = time.perf_counter() - t0
+    _, t = timed(lambda: subprocess.run([str(MAFIA), mode, str(frac), "-ascii", str(dat), str(res)], check=True, capture_output=True))
     sets = []
     for line in (res.read_text().splitlines() if res.exists() else []):          # format: 'i1 i2 ... (support)'
         if "(" not in line: continue
@@ -79,7 +84,7 @@ def main():
     frac = 0.01
     mfi, t_m = mfi_at[frac]
     te = TransactionEncoder(); X = pd.DataFrame(te.fit([list(t) for t in T]).transform([list(t) for t in T]), columns=te.columns_)
-    t0 = time.perf_counter(); fp = fpmax(X, min_support=math.ceil(frac * N) / N - 1e-12, use_colnames=True); t_fp = time.perf_counter() - t0
+    fp, t_fp = timed(lambda: fpmax(X, min_support=math.ceil(frac * N) / N - 1e-12, use_colnames=True))
     m_set = {frozenset(name[i] for i in s): c for s, c in mfi}
     f_set = {frozenset(s): round(v * N) for s, v in zip(fp.itemsets, fp.support)}
     say(f"## min_sup = 1% ({math.ceil(frac*N)} listings)\nMAFIA: {len(m_set)} MFIs in {t_m:.3f}s; "
@@ -87,8 +92,8 @@ def main():
     # ---- run time vs support: Apriori (level-wise), FP-growth (pattern growth), MAFIA (depth-first, maximal only)
     sw = pd.DataFrame(sweep); ta, tf_ = [], []
     for fr in sw.min_sup:
-        t0 = time.perf_counter(); apriori(X, min_support=fr, use_colnames=True, low_memory=True); ta.append(time.perf_counter() - t0)
-        t0 = time.perf_counter(); fpgrowth(X, min_support=fr, use_colnames=True); tf_.append(time.perf_counter() - t0)
+        ta.append(timed(lambda: apriori(X, min_support=fr, use_colnames=True, low_memory=True))[1])
+        tf_.append(timed(lambda: fpgrowth(X, min_support=fr, use_colnames=True))[1])
     sw["t_apriori"], sw["t_fpgrowth"] = ta, tf_
     sw.to_csv(OUT / "sweep.csv", index=False)
     fig, ax = plt.subplots(1, 2, figsize=(12, 4.2))
@@ -114,8 +119,8 @@ def main():
            else f"grows {sw.t_fpgrowth.iloc[-1]/sw.t_fpgrowth.iloc[0]:.1f}x") +
         f". MAFIA mines only the maximal border, so its output grows "
         f"from {sw.MFI.iloc[0]} to {sw.MFI.iloc[-1]} itemsets while FIs grow from {sw.FI.iloc[0]} to {sw.FI.iloc[-1]}. "
-        "Times compare implementations (Python libraries vs compiled C++), not only algorithms. They come from a "
-        "separate run from Section 4, so the same Apriori job can differ by a few tenths of a second.\n")
+        "MAFIA is compiled C++ and the others are Python, so these times compare programs as much as algorithms. "
+        "Each time is the median of 3 runs.\n")
 
     rows = sorted(m_set.items(), key=lambda kv: (-len(kv[0]), -kv[1]))
     pd.DataFrame([dict(mfi=" ".join(sorted(s)), size=len(s), support_count=c, support=c / N) for s, c in rows]) \

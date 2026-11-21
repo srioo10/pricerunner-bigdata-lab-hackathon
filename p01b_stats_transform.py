@@ -99,8 +99,8 @@ def main():
     # the z rule uses mean and std, which the extreme values themselves inflate; the IQR fence uses quartiles only
     say(f"\nThe IQR fence flags more points than abs(z) > 3 on: {', '.join(more_iqr) or 'none'}. "
         "The z rule is computed from the mean and std, which the extreme values pull up, so it flags fewer of them. "
-        "These fences are recomputed on the cleaned data, so they differ from the p01 cleaning fence (computed on the raw "
-        "titles) and the titles they flag are kept. No rows are dropped here; large count values are real "
+        "These fences are recomputed on the cleaned data, so they differ from the p01 cleaning fence (computed on the cleaned "
+        "titles before outlier removal) and the titles they flag are kept. No rows are dropped here; large count values are real "
         "popular products or merchants.\n")
 
     # ---- skew transforms ----
@@ -110,9 +110,9 @@ def main():
     say("## Skew reduction on listings_per_product\n\n| transform | skewness |\n|---|---|")
     for n_, t in (("none", v), ("log(1+x)", lg), ("sqrt(x)", sq), (f"Box-Cox (lambda={lam:.3f})", bc)):
         say(f"| {n_} | {stats.skew(t):.3f} |")
-    fig, ax = plt.subplots(1, 4, figsize=(16, 3.4))
+    fig, ax = plt.subplots(2, 2, figsize=(10, 7)); ax = ax.ravel()
     for a, (n_, t) in zip(ax, (("original", v), ("log(1+x)", lg), ("sqrt(x)", sq), (f"Box-Cox lambda={lam:.2f}", bc))):
-        a.hist(t, bins=30, color="#4C72B0"); a.set_title(f"{n_}\nskew={stats.skew(t):.2f}", fontsize=9)
+        a.hist(t, bins=30, color="#4C72B0"); a.set_title(f"{n_}, skew = {stats.skew(t):.2f}", fontsize=15)
     fig.suptitle("Skew reduction of listings per product"); fig.tight_layout()
     fig.savefig(OUT / "fig_skew_transform.png", dpi=150, bbox_inches="tight"); plt.close(fig)
 

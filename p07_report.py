@@ -60,6 +60,7 @@ def short_heading(t):
 
 def short_header(c):
     """Shorten verbose machine column names (speedup_vs_mlxtend_apriori -> x vs apriori)."""
+    c = {"training listings": "train n", "test listings": "test n", "test accuracy": "test acc", "THEN category": "THEN"}.get(c, c)
     return re.sub(r"^speedup_vs_(?:mlxtend_|sklearn_)?(\w+?)(?:_dt)?$", lambda m: "x vs " + m.group(1).replace("_", " "), c)
 
 def classification_report_tex(block):
@@ -108,7 +109,7 @@ def md_to_tex(md, base_level=1, appendix=True):
             while j < len(lines) and lines[j].startswith("|"): rows_ahead += 1; j += 1
             need = 4 + 2 * text_lines + (0.8 * rows_ahead if rows_ahead <= 40 else 6)
             need += 2 * bool(rest)                                        # the line printed under a shortened heading
-            if j < len(lines) and lines[j].startswith("#"): need += 6    # a sub-heading follows: keep its start too
+            if j < len(lines) and lines[j].startswith("#"): need += 14 if lvl == 0 else 6   # a section keeps its first sub-heading's text    # a sub-heading follows: keep its start too
             out.append(f"\\needspace{{{need:.0f}\\baselineskip}}")
             out.append(f"\\{secs[lvl]}{{{esc(head)}}}" + (f"\n{esc(rest)}\\par" if rest else "")); i += 1; continue
         if l.startswith("|") and appendix:
@@ -316,7 +317,7 @@ Decision tree & split & 80/20 stratified, seed 42; second split grouped by produ
  & grid (5-fold CV) & criterion \{gini, entropy\} $\times$ max depth \{5, 10, 20, 40, none\} $\times$ min samples per leaf \{1, 5\}; picked: gini, no depth limit, 1 \\
 K-Means & features & TF-IDF (words in $\geq$ 3 titles, sublinear tf) $\rightarrow$ LSA 100 dimensions $\rightarrow$ L2 norm (cosine) \\
  & k, init & k = 10 (one per category); k = 2..24 swept; k-means++ with 10 restarts; seeds 42, 0, 1, 2, 3 \\
-Dendrograms & linkage & Ward on the 10 cluster centroids; average linkage, cosine distance on 60 sampled listings \\
+Dendrograms & linkage & Ward on the 10 category centroids; average linkage, cosine distance on 60 sampled listings \\
 MAFIA & min support & 1\% (same as Apriori), sweep 5\%, 2\%, 1\%, 0.5\% \\
 PySpark & engines & FPGrowth (support 1\%, confidence 80\%) and DecisionTree (entropy, depth 20, 1,000-word vocabulary) \\
  & scaling & data copied 1, 2, 5, 10, 20 times; median of 3 runs; local[*] mode, 32 partitions, 6 GB driver \\
@@ -394,7 +395,7 @@ What the cleaning did (from \texttt{out/preprocess\_log.txt}):""")
     if st.exists():
         parts.append(md_to_tex(st.read_text(), 1).replace("\\subsection{Descriptive statistics and data transformation}",
                      "\\subsection{Descriptive statistics and further transformations (p01b\\_stats\\_transform.py)}"))
-        parts.append(fig(rel("fig_skew_transform.png"), "Skew reduction of listings per product (log, sqrt, Box-Cox)", "\\linewidth"))
+        parts.append(fig(rel("fig_skew_transform.png"), "Skew reduction of listings per product (log, sqrt, Box-Cox)", "0.7\\linewidth"))
     parts.append("\\section{Descriptive analytics: visualisations}\n" + plots_section())
 
     arm = (OUT / "arm/arm_summary.md").read_text()
@@ -405,14 +406,14 @@ What the cleaning did (from \texttt{out/preprocess\_log.txt}):""")
     parts.append(md_to_tex(dt, 0))
     parts += [fig(rel("model/dt_confusion.png"), "Decision tree: confusion matrix on the test set", "0.75\\linewidth"),
               fig(rel("model/dt_importance.png"), "Decision tree: top-20 feature importances", "0.55\\linewidth"),
-              fig(rel("model/dt_tree.png"), "Top two levels of the tuned decision tree (the model evaluated and used for the IF-THEN rules)", "\\linewidth")]
+              fig(rel("model/dt_tree.png"), "Tuned decision tree, splits drawn to depth 2; (...) marks the deeper subtrees (the model evaluated and used for the IF-THEN rules)", "\\linewidth")]
     km_md, dendro_md = ("# K-Means clustering" + km).split("## Dendrogram merges", 1)
     parts.append(md_to_tex(km_md, 0))
-    parts += [fig(rel("model/km_elbow_silhouette.png"), "Elbow (SSE) and silhouette for k = 2..24", "0.85\\linewidth"),
+    parts += [fig(rel("model/km_elbow_silhouette.png"), "Elbow (SSE) and silhouette for k = 2..24 (silhouette on a 6,000-listing sample, cosine geometry)", "0.85\\linewidth"),
               fig(rel("model/km_vs_category.png"), "K-Means (k=10) clusters vs true categories", "0.8\\linewidth"),
-              fig(rel("model/km_scatter2d.png"), "K-Means clusters projected to 2-D", "0.5\\linewidth")]
+              fig(rel("model/km_scatter2d.png"), "K-Means clusters projected to 2-D (colour = cluster id; the cluster table in Section 6.1 gives each one's majority category)", "0.5\\linewidth")]
     parts.append(md_to_tex("## Dendrograms (hierarchical clustering)" + dendro_md, 0))
-    parts += [fig(rel("model/dendro_categories.png"), "Dendrogram of the 10 category centroids (Ward)", "0.75\\linewidth"),
+    parts += [fig(rel("model/dendro_categories.png"), "Dendrogram of the 10 category centroids (Ward)", "0.55\\linewidth"),
               fig(rel("model/dendro_sample.png"), "Dendrogram of 60 listings, 6 per category (average link, cosine). "
                   "Leaf codes: CPU = CPUs, CAM = Digital Cameras, DW = Dishwashers, FZ = Freezers, FF = Fridge Freezers, "
                   "FR = Fridges, MW = Microwaves, PH = Mobile Phones, TV = TVs, WM = Washing Machines", "0.55\\linewidth")]
@@ -430,7 +431,7 @@ What the cleaning did (from \texttt{out/preprocess\_log.txt}):""")
     parts.append(md_to_tex(CONCLUSIONS.read_text(), 0))
     parts.append(implementation_section())
     if APPENDIX:
-        parts.append("\\appendix\\section{Long tables}\n" + "\n".join(
+        parts.append("\\clearpage\\appendix\\section{Long tables}\n" + "\n".join(
             f"\\subsection*{{Table A.{k}: {esc(t)}}}\n{tex}" for k, (t, tex) in enumerate(APPENDIX, 1)))
 
     tex = r"""\documentclass[10pt,a4paper]{article}

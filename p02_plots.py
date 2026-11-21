@@ -343,14 +343,14 @@ radn = (rad - rad.min()) / (rad.max() - rad.min())        # min-max per axis acr
 angles = np.linspace(0, 2 * np.pi, rad.shape[1], endpoint=False)
 # one small radar per category: ten overlaid polygons were unreadable
 short_ax = ["tokens", "chars", "codes", "brands", "merchants", "listings"]
-fig, axs = plt.subplots(2, 5, figsize=(15, 6.6), subplot_kw=dict(polar=True))
+fig, axs = plt.subplots(2, 5, figsize=(17, 8), subplot_kw=dict(polar=True))
 for ax, c in zip(axs.flat, CATS):
     v = radn.loc[c].values
     ax.plot(np.r_[angles, angles[0]], np.r_[v, v[0]], lw=1.8, color=PAL[c])
     ax.fill(np.r_[angles, angles[0]], np.r_[v, v[0]], color=PAL[c], alpha=0.25)
-    ax.set_xticks(angles); ax.set_xticklabels(short_ax, fontsize=10)
+    ax.set_xticks(angles); ax.set_xticklabels(short_ax, fontsize=14)
     ax.set_ylim(0, 1); ax.set_yticks([0.5, 1]); ax.set_yticklabels([], fontsize=10)
-    ax.set_title(c, fontsize=10, pad=12)
+    ax.set_title(c, fontsize=16, pad=16)
 fig.suptitle("Category profiles on six indicators, each scaled 0 (lowest category) to 1 (highest)", y=1.0)
 fig.tight_layout()
 save(fig, "fig11_radar_category_profile", "Radar profile per category", shrink=1.0)
@@ -377,7 +377,8 @@ for q, lab in [(0.25, "Q1"), (0.5, "median"), (0.75, "Q3")]:
     xv = np.quantile(xs, q)
     ax.axhline(xv, color="grey", ls=":", lw=1)
     ax.axvline(q, color="grey", ls=":", lw=1)
-    ax.annotate(f"{lab} = {xv:.0f}", (q, xv), xytext=(q + 0.03, xv + 3), fontsize=10, color="#333333")
+    ax.annotate(f"{lab} = {xv:.0f}", (q, xv), xytext=(-8, 12), textcoords="offset points", ha="right", fontsize=11, color="#333333",
+                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="none"))   # up-left of the point, where the curve is lower
 ax.set_xlabel("f = (i - 0.5) / n")
 ax.set_ylabel("Sorted title length (characters)")
 ax.set_title(f"Quantile plot of title length (n = {n:,})")

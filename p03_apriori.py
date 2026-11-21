@@ -29,15 +29,29 @@ def onehot(T):
     te = TransactionEncoder()
     return pd.DataFrame(te.fit(T).transform(T, sparse=False), columns=te.columns_)
 
+def timed(fn, reps=3):
+    """Run fn reps times; return its result and the median wall time (one run moves by a few tenths of a second)."""
+    ts = []
+    for _ in range(reps):
+        t0 = time.perf_counter(); out = fn(); ts.append(time.perf_counter() - t0)
+    return out, sorted(ts)[len(ts) // 2]
+
 def mine(X, sup, conf):
+    fi, t_fi = timed(lambda: apriori(X, min_support=sup, use_colnames=True, low_memory=True))
     t0 = time.perf_counter()
-    fi = apriori(X, min_support=sup, use_colnames=True, low_memory=True)
-    t_fi = time.perf_counter() - t0
     rules = association_rules(fi, metric="confidence", min_threshold=conf) if len(fi) else pd.DataFrame()
     if len(rules):   # fixed alphabetical order first, so ties in later sorts always break the same way
         key = rules.antecedents.map(fmt) + rules.consequents.map(fmt)
         rules = rules.loc[key.sort_values(kind="mergesort").index].reset_index(drop=True)
-    return fi, rules, t_fi, time.perf_counter() - t0
+    return fi, rules, t_fi, t_fi + time.perf_counter() - t0
+
+def distinct(rules):
+    """Keep a rule only if it shares no item with a rule ranked above it, so one phrase cannot fill the table."""
+    kept, seen = [], set()
+    for i, (a, c) in zip(rules.index, zip(rules.antecedents, rules.consequents)):
+        if not (a | c) & seen:
+            kept.append(i); seen |= a | c
+    return rules.loc[kept]
 
 def fmt(s): return "{" + ", ".join(sorted(s)) + "}"
 
@@ -55,7 +69,7 @@ def main():
         f"avg items/transaction: {X.sum(1).mean():.2f}, density: {X.values.mean():.5f}\n")
 
     # ---- 1. parameter sweep on the global DB ----
-    say("## Parameter sweep (global DB)\n\n| min_sup | min_conf | #frequent itemsets | max size | #rules | time (s) |\n|---|---|---|---|---|---|")
+    say("## Parameter sweep (global DB)\n\n| min_sup | min_conf | #frequent itemsets | max size | #rules | time (s, median of 3) |\n|---|---|---|---|---|---|")
     sweep = []
     for sup in (0.05, 0.02, 0.01):
         for conf in (0.9, 0.8, 0.7):
@@ -81,12 +95,7 @@ def main():
     nr = nr[~nr.itemset.map(lambda s: any(x.startswith("cat=") for x in s))]
     # many top rules are re-orderings of one phrase ('hewlett packard enterprise'); to show different patterns,
     # a rule is skipped if it shares any item with a rule already listed
-    kept = []
-    for r in nr.sort_values(["lift", "confidence"], ascending=False, kind="mergesort").itertuples():
-        if any(k.itemset & r.itemset for k in kept):    # shares an item with a higher-ranked rule -> same pattern
-            continue
-        kept.append(r)
-    nr = pd.DataFrame(kept)
+    nr = distinct(nr.sort_values(["lift", "confidence"], ascending=False, kind="mergesort"))
     say("### Top 15 rules by lift, no item repeated (a rule sharing any item with a higher-ranked rule is skipped; category item excluded)\n"); say(rules_table(nr))
     cls = rules[rules.consequents.map(lambda c: len(c) == 1 and next(iter(c)).startswith("cat="))]
     cls = cls.sort_values(["confidence", "support"], ascending=False, kind="mergesort")
@@ -101,8 +110,9 @@ def main():
     fi_w, rules_w, _, t_w = mine(Xw, 0.01, 0.8)
     say(f"## Words only (no category item), min_sup 1%, min_conf 80%\n\n{len(fi_w)} frequent itemsets and {len(rules_w)} "
         f"rules in {t_w:.2f}s (vs {len(fi)} / {len(rules)} with the category item). These rules are pure title-word "
-        "associations, free of the inserted label. Top 10 single-consequent rules by confidence then support:\n")
-    rw = rules_w[rules_w.consequents.map(len) == 1].sort_values(["confidence", "support"], ascending=False, kind="mergesort").head(10)
+        "associations, free of the inserted label. Top 10 single-consequent rules by confidence then support, "
+        "again with no item repeated:\n")
+    rw = distinct(rules_w[rules_w.consequents.map(len) == 1].sort_values(["confidence", "support"], ascending=False, kind="mergesort")).head(10)
     say(rules_table(rw, 10) + "\n")
     # ---- 3. per-category mining: denser databases, so higher supports (20/10/5%) ----
     say("## Per-category Apriori (min_sup 20%, 10%, 5%)\n\nInside one category the database is much denser, so higher supports are possible; 20% finds few rules in most categories, so 10% and 5% are also shown.\n")

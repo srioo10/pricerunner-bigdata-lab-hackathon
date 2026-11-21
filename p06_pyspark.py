@@ -268,8 +268,7 @@ def compare(med, tech, single, n_freq_items=None):
             out.append(f"Spark is slower at every size up to {sizes[-1]}x ({rows_of(sizes[-1])}).")
         if rising:
             out.append(f"The speedup rises at each step, from {sp.iloc[0]:.2f} to {sp.iloc[-1]:.2f}"
-                       + (", so the largest size tested is where the two meet." if sp.iloc[-1] >= SLOWER
-                          else ", but stays below 1 in this run."))
+                       + ("." if sp.iloc[-1] >= SLOWER else ", but stays below 1 in this run."))
         if single == "mlxtend_fpgrowth" and n_freq_items is not None:
             out.append(f"Single-machine FP-growth builds one compressed FP-tree over the "
                        f"{n_freq_items} frequent items, which stays cheap at {sizes[-1]}x, while "
@@ -458,7 +457,8 @@ def write_report(ctx, tim, outdir):
 
     # ---- scalability ---------------------------------------------------------
     md.append(f"\n## Scalability: data replicated {min(sizes)}x to {max(sizes)}x\n")
-    md.append(f"Median of {repeats} runs per point (min and max are in timings.csv). Before the "
+    md.append(f"Median of {repeats} runs per point; each speedup is followed by its range over those runs "
+              "(worst to best pairing). Before the "
               "clock starts, the replicated data are built and cached in Spark; the "
               "single-machine side starts from an in-memory Python list.\n")
 
@@ -483,6 +483,12 @@ def write_report(ctx, tim, outdir):
                     cells.append("-")
                 elif c == "rows":
                     cells.append(f"{int(v):,}")
+                elif c.startswith("speedup_vs_"):
+                    # range over the repeats: slowest single run / fastest Spark run .. fastest single / slowest Spark
+                    t = tim[(tim.technique == tech) & (tim["size"] == size)].groupby("engine").seconds
+                    lo, hi = t.min(), t.max()
+                    sg, sp_ = c[len("speedup_vs_"):], SPARK_ENGINE[tech]
+                    cells.append(f"{v:.2f} ({lo[sg] / hi[sp_]:.2f}-{hi[sg] / lo[sp_]:.2f})")
                 else:
                     cells.append(f"{v:.2f}")
             md.append(f"| {size}x | " + " | ".join(cells) + " |")
@@ -576,10 +582,7 @@ def write_report(ctx, tim, outdir):
         md.append(p + "\n")
 
     slow_growth = [f for f in facts if f["g_spark"] < f["g_single"]]
-    if slow_growth and len(slow_growth) == len(facts):
-        md.append("In every comparison the Spark time grows more slowly with data size than the "
-                  "single-machine time, which fits the work being split across cores.\n")
-    elif slow_growth:
+    if slow_growth and len(slow_growth) < len(facts):
         md.append("The Spark time grows more slowly with data size than the single-machine time "
                   "only against " + ", ".join(LABEL[f["single"]] for f in slow_growth) + ".\n")
 

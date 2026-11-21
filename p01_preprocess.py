@@ -37,7 +37,7 @@ UMLAUT_FIX = [(r"geschirrsp ler", "geschirrspuler"), (r"\bk hl", "kuhl"), (r"\bw
 DE_EN = {"geschirrspuler": "dishwasher", "kuhlschrank": "fridge", "gefrierschrank": "freezer", "waschmaschine": "washing machine",
          "mikrowelle": "microwave", "fernseher": "tv", "weiss": "white", "schwarz": "black", "silber": "silver",
          "edelstahl": "stainless steel", "grau": "grey", "spacegrau": "space grey", "einbau": "built-in",
-         "unterbau": "under-counter", "gefrier": "freezer", "kombi": "combi", "handy": "mobile phone", "kamera": "camera"}
+         "unterbau": "under-counter", "gefrier": "freezer", "kuhl": "fridge", "khl": "fridge", "kombi": "combi", "handy": "mobile phone", "kamera": "camera"}
 
 def clean_title(t):
     """Normalise one raw title: lower case, German repair/translation, punctuation out, units glued to numbers."""
