@@ -65,7 +65,7 @@ def main():
     say(f"# MAFIA maximal frequent itemsets\n\nFIMI file: {N} transactions, {len(items)} items -> {dat.name}\n")
 
     # ---- 1. support sweep: |FI| vs |CFI| vs |MFI| ----
-    say("| min_sup | count | #FI | #CFI | #MFI | MAFIA time MFI (s) | longest MFI |\n|---|---|---|---|---|---|---|")
+    say("| min_sup | min count | frequent itemsets | closed itemsets | maximal itemsets | MAFIA time MFI (s) | longest MFI |\n|---|---|---|---|---|---|---|")
     sweep, mfi_at = [], {}
     for frac in (0.05, 0.02, 0.01, 0.005):
         mfi, t_m = run_mafia("-mfi", dat, frac)
@@ -87,8 +87,10 @@ def main():
     fp, t_fp = timed(lambda: fpmax(X, min_support=math.ceil(frac * N) / N - 1e-12, use_colnames=True))
     m_set = {frozenset(name[i] for i in s): c for s, c in mfi}
     f_set = {frozenset(s): round(v * N) for s, v in zip(fp.itemsets, fp.support)}
-    say(f"## min_sup = 1% ({math.ceil(frac*N)} listings)\nMAFIA: {len(m_set)} MFIs in {t_m:.3f}s; "
-        f"mlxtend fpmax: {len(f_set)} MFIs in {t_fp:.2f}s; identical sets and supports: {'yes' if m_set == f_set else 'NO'}\n")
+    say(f"## min_sup = 1% ({math.ceil(frac*N)} listings)\nMAFIA finds {len(m_set)} MFIs in {t_m:.3f} s and mlxtend fpmax "
+        f"finds {len(f_set)} in {t_fp:.2f} s; "
+        + ("both give the same itemsets with the same supports.\n" if m_set == f_set
+           else "the two results differ in their itemsets or supports.\n"))
     # ---- run time vs support: Apriori (level-wise), FP-growth (pattern growth), MAFIA (depth-first, maximal only)
     sw = pd.DataFrame(sweep); ta, tf_ = [], []
     for fr in sw.min_sup:
@@ -120,7 +122,7 @@ def main():
         f". MAFIA mines only the maximal border, so its output grows "
         f"from {sw.MFI.iloc[0]} to {sw.MFI.iloc[-1]} itemsets while FIs grow from {sw.FI.iloc[0]} to {sw.FI.iloc[-1]}. "
         "MAFIA is compiled C++ and the others are Python, so these times compare programs as much as algorithms. "
-        "Each time is the median of 3 runs.\n")
+        "Each time is the median of 3 runs, made separately from Section 4, so the Apriori times differ slightly from there.\n")
 
     rows = sorted(m_set.items(), key=lambda kv: (-len(kv[0]), -kv[1]))
     pd.DataFrame([dict(mfi=" ".join(sorted(s)), size=len(s), support_count=c, support=c / N) for s, c in rows]) \
@@ -129,7 +131,10 @@ def main():
     for k, (s, c) in enumerate(rows[:15], 1):
         say(f"| {k} | {{{', '.join(sorted(s))}}} | {len(s)} | {c/N:.4f} ({c}) |")
     by_cat = pd.Series([next((x[4:] for x in s if x.startswith("cat=")), "(no category item)") for s in m_set]).value_counts()
-    say("\nMFIs per category item: " + ", ".join(f"{k}: {v}" for k, v in by_cat.items()) + "\n")
+    no_cat = int(by_cat.get("(no category item)", 0)); by_cat = by_cat.drop("(no category item)", errors="ignore")
+    say(f"\nOf the {len(m_set)} MFIs, {no_cat} contain no category item"
+        + (f"; {by_cat.idxmax()} have the most ({by_cat.max()}) and {by_cat.idxmin()} the fewest ({by_cat.min()})" if len(by_cat) else "")
+        + ".\n")
 
     # ---- 3. maximal association rules ----
     # support of any subset X of an MFI is counted directly (MFIs alone don't store it)
@@ -163,8 +168,9 @@ def main():
         "so they are a subset of all confident association rules, not the full set. Rule policy: for every MFI M and every non-empty "
         f"X subset of M, X -> M minus X is kept if sup(M)/sup(X) >= 0.8 ({n_all} rules); then, per MFI, only the rules with the "
         f"smallest antecedent are kept ({len(R)} rules from {R.mfi.nunique()} MFIs).\n")
-    say("| # | IF | THEN | support | confidence | lift |\n|---|---|---|---|---|---|")
     best = R.sort_values(["support", "confidence"], ascending=False).drop_duplicates("consequent").head(20)
+    say(f"The table shows {len(best)} of the {len(R)} rules: for each THEN part, the rule with the highest support.\n")
+    say("| # | IF | THEN | support | confidence | lift |\n|---|---|---|---|---|---|")
     for k, r in enumerate(best.itertuples(), 1):
         say(f"| {k} | {{{r.antecedent}}} | {{{r.consequent}}} | {r.support:.4f} | {r.confidence:.3f} | {r.lift:.2f} |")
     say("\nEach rule's IF+THEN is a whole maximal itemset, so these rules describe the largest product "

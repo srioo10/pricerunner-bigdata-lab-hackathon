@@ -1,6 +1,7 @@
 # PriceRunner product data: descriptive and predictive analytics
 
 End-semester lab, Analytics & Systems of Big Data Practice (25CS5004 / CS5010).
+Submitted by Sooraj S (CS23I1006).
 The report is [`report/report.pdf`](report/report.pdf).
 
 ## Data

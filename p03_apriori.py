@@ -37,13 +37,16 @@ def timed(fn, reps=3):
     return out, sorted(ts)[len(ts) // 2]
 
 def mine(X, sup, conf):
-    fi, t_fi = timed(lambda: apriori(X, min_support=sup, use_colnames=True, low_memory=True))
-    t0 = time.perf_counter()
-    rules = association_rules(fi, metric="confidence", min_threshold=conf) if len(fi) else pd.DataFrame()
+    """Frequent itemsets + rules; both times are medians of 3 full runs (itemsets alone, and itemsets + rules)."""
+    def run():
+        fi = apriori(X, min_support=sup, use_colnames=True, low_memory=True)
+        return fi, association_rules(fi, metric="confidence", min_threshold=conf) if len(fi) else pd.DataFrame()
+    _, t_fi = timed(lambda: apriori(X, min_support=sup, use_colnames=True, low_memory=True))
+    (fi, rules), t_all = timed(run)
     if len(rules):   # fixed alphabetical order first, so ties in later sorts always break the same way
         key = rules.antecedents.map(fmt) + rules.consequents.map(fmt)
         rules = rules.loc[key.sort_values(kind="mergesort").index].reset_index(drop=True)
-    return fi, rules, t_fi, t_fi + time.perf_counter() - t0
+    return fi, rules, t_fi, t_all
 
 def distinct(rules):
     """Keep a rule only if it shares no item with a rule ranked above it, so one phrase cannot fill the table."""
@@ -65,8 +68,10 @@ def main():
     df = pd.read_csv(ROOT / "out/clean.csv")
     T = load_transactions(df)
     X = onehot(T)
-    say(f"# Apriori association rules\n\nTransactions: {len(T)}, distinct items: {X.shape[1]}, "
-        f"avg items/transaction: {X.sum(1).mean():.2f}, density: {X.values.mean():.5f}\n")
+    n_cat = sum(c.startswith("cat=") for c in X.columns)
+    say(f"# Apriori association rules\n\n{len(T):,} transactions over {X.shape[1]:,} distinct items "
+        f"({X.shape[1] - n_cat:,} words plus {n_cat} cat= items), {X.sum(1).mean():.2f} items each on average "
+        f"(density {X.values.mean():.5f}).\n")
 
     # ---- 1. parameter sweep on the global DB ----
     say("## Parameter sweep (global DB)\n\n| min_sup | min_conf | #frequent itemsets | max size | #rules | time (s, median of 3) |\n|---|---|---|---|---|---|")
@@ -86,7 +91,9 @@ def main():
     rules = rules.sort_values(["lift", "confidence"], ascending=False, kind="mergesort")
     rules.assign(antecedents=rules.antecedents.map(fmt), consequents=rules.consequents.map(fmt)) \
          .to_csv(OUT / "rules_global_s1_c80.csv", index=False)
-    say(f"## Chosen setting min_sup=1%, min_conf=80% -> {len(fi)} frequent itemsets, {len(rules)} rules\n")
+    say(f"## Chosen setting (support 1%, confidence 80%)\n\nThis gives {len(fi):,} frequent itemsets and {len(rules):,} rules. "
+        "Lift is the confidence divided by the support of the THEN part; above 1 means the words occur together "
+        "more often than chance.\n")
     # many rules are permutations of one itemset (e.g. 'hewlett packard enterprise'): keep one
     # single-consequent rule per itemset so the top list shows distinct patterns
     nr = rules[rules.consequents.map(len) == 1].copy()
@@ -96,11 +103,14 @@ def main():
     # many top rules are re-orderings of one phrase ('hewlett packard enterprise'); to show different patterns,
     # a rule is skipped if it shares any item with a rule already listed
     nr = distinct(nr.sort_values(["lift", "confidence"], ascending=False, kind="mergesort"))
-    say("### Top 15 rules by lift, no item repeated (a rule sharing any item with a higher-ranked rule is skipped; category item excluded)\n"); say(rules_table(nr))
+    n_top = 15
+    say(f"### Top {n_top} rules by lift\n\nA rule is skipped if it shares a word with a higher-ranked rule; rules with "
+        "the category item are left out.\n"); say(rules_table(nr, n_top))
     cls = rules[rules.consequents.map(lambda c: len(c) == 1 and next(iter(c)).startswith("cat="))]
     cls = cls.sort_values(["confidence", "support"], ascending=False, kind="mergesort")
-    say(f"\n### Class-association rules (THEN part = category): {len(cls)} rules, top 15 by confidence\n")
-    say(rules_table(cls))
+    say(f"\n### Class-association rules (THEN part = category)\n\n{len(cls)} rules have a category as the THEN part; "
+        f"the {min(n_top, len(cls))} with the highest confidence are:\n")
+    say(rules_table(cls, n_top))
     say("\nOn this corpus, one or two title words co-occur with a single category with ~100% confidence. These are "
         "descriptive association rules mined from all listings, not a validated classifier; held-out classification "
         "performance is measured separately with the decision tree.\n")
@@ -137,8 +147,11 @@ def main():
     fi_m, _, t_lib, _ = mine(onehot([set(t) for t in Tm]), 0.1, 0.7)
     lib = {frozenset(s): round(v * len(Tm)) for s, v in zip(fi_m.itemsets, fi_m.support)}
     same = lib == own
-    say(f"\n## Cross-check (TVs, min_sup 10%)\nmlxtend: {len(lib)} itemsets (longest {max(map(len, lib))} items) in {t_lib:.3f}s; "
-        f"own Apriori: {len(own)} itemsets in {t_own:.3f}s; identical itemsets and support counts: {'yes' if same else 'NO'}")
+    say(f"\n## Cross-check (TVs, min_sup 10%)\n\n" + (
+        f"Both return the same {len(lib)} itemsets (the longest has {max(map(len, lib))} items) with the same support "
+        f"counts (mlxtend {t_lib:.3f} s, own code {t_own:.3f} s)." if same else
+        f"The two results differ: mlxtend finds {len(lib)} itemsets in {t_lib:.3f} s, own code {len(own)} in {t_own:.3f} s, "
+        "and the itemsets or support counts do not all match."))
     (OUT / "arm_summary.md").write_text("\n".join(md))
 
 if __name__ == "__main__":

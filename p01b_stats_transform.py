@@ -11,6 +11,7 @@ listings_per_merchant (listings of the same merchant).
   - encoding: integer (label) encoding and one-hot encoding of category
 Output: out/stats_transform.md, out/fig_skew_transform.png
 """
+import re
 import numpy as np, pandas as pd
 import matplotlib; matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -35,7 +36,9 @@ def main():
 
     # ---- descriptive statistics ----
     say("# Descriptive statistics and data transformation\n")
-    say("## Descriptive statistics of the numeric attributes\n\nlistings_per_product and listings_per_merchant are listing-weighted: each listing carries the size of its product group / merchant.\n")
+    say("## Descriptive statistics of the numeric attributes\n\nn_chars is the length of the cleaned title in characters, "
+        "n_tokens the number of informative words, n_codes the number of model/SKU codes in the cleaned title (codes are "
+        "counted before the word filter removes them). listings_per_product and listings_per_merchant are listing-weighted: each listing carries the size of its product group / merchant.\n")
     say("| attribute | count | mean | median | mode | std | min | Q1 | Q3 | IQR | max | range | skewness | kurtosis |")
     say("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for c in num:
@@ -45,7 +48,8 @@ def main():
     sk = {c: stats.skew(df[c]) for c in num}
     sym = [c for c in num if abs(sk[c]) < 0.5]; mod = [c for c in num if 0.5 <= abs(sk[c]) < 1]; hi = [c for c in num if abs(sk[c]) >= 1]
     say(f"\nRoughly symmetric (|skew| < 0.5): {', '.join(sym) or '-'}. Moderately skewed (0.5-1): {', '.join(mod) or '-'}. "
-        f"Highly right-skewed (> 1): {', '.join(hi) or '-'}; for these the median is a better centre than the mean.\n")
+        f"Highly right-skewed (> 1): {', '.join(hi) or '-'}"
+        + (f"; for {'this attribute' if len(hi) == 1 else 'these'} the median is a better centre than the mean.\n" if hi else ".\n"))
     say("Category is nominal: its mode is " + df.category.mode().iloc[0] + " with "
         f"{df.category.value_counts().iloc[0]} listings.\n")
     corr = df[num].corr().round(3)
@@ -59,12 +63,12 @@ def main():
     j = int(np.ceil(np.log10(x.abs().max() + 1)))          # smallest j with max(|x|)/10^j < 1
     ds = x / 10 ** j
     say("\n## Normalisation of n_chars\n")
-    say(f"- Min-max: v' = (v - {x.min():.0f}) / ({x.max():.0f} - {x.min():.0f}) -> range [{mm.min():.2f}, {mm.max():.2f}], mean {mm.mean():.3f}")
-    say(f"- Z-score: v' = (v - {x.mean():.2f}) / {x.std():.2f} -> mean {z.mean():.3f}, std {z.std():.3f}, range [{z.min():.2f}, {z.max():.2f}]")
+    say(f"- Min-max: v' = (v - {x.min():.0f}) / ({x.max():.0f} - {x.min():.0f}) -> range [{mm.min():.2f}, {mm.max():.2f}], mean {mm.mean():.2f}")
+    say(f"- Z-score: v' = (v - {x.mean():.2f}) / {x.std():.2f} -> mean {round(z.mean(), 2) + 0.0:.2f}, std {z.std():.2f}, range [{z.min():.2f}, {z.max():.2f}]")
     say(f"- Decimal scaling: j = {j}, v' = v / 10^{j} -> range [{ds.min():.3f}, {ds.max():.3f}] (all |v'| < 1)")
-    ex = x.iloc[:3].tolist()
-    say(f"- Example (first 3 listings): v = {ex} -> min-max {[round(v,3) for v in mm.iloc[:3]]}, "
-        f"z {[round(v,3) for v in z.iloc[:3]]}, decimal {[round(v,3) for v in ds.iloc[:3]]}\n")
+    l2 = lambda s_, d=2: "[" + ", ".join(f"{v:.{d}f}" for v in s_.iloc[:3]) + "]"
+    say(f"- Example (first 3 listings): v = [{', '.join(f'{v:.0f}' for v in x.iloc[:3])}] -> min-max {l2(mm)}, "
+        f"z {l2(z)}, decimal {l2(ds, 3)}\n")
 
     # ---- equal-frequency binning + smoothing ----
     say("## Equal-frequency binning and smoothing of n_chars\n")
@@ -79,8 +83,9 @@ def main():
         lo, hi = g.transform("min"), g.transform("max")
         bbound = np.where((x - lo) <= (hi - x), lo, hi)        # each value -> nearer bin boundary
         ch = {"means": np.abs(x - bmean).mean(), "medians": np.abs(x - bmed).mean(), "boundaries": np.abs(x - bbound).mean()}
-        say(f"\nMean absolute change after smoothing - by means {ch['means']:.2f}, by medians {ch['medians']:.2f}, "
-            f"by boundaries {ch['boundaries']:.2f} characters (least: {min(ch, key=ch.get)}, most: {max(ch, key=ch.get)}).\n")
+        say(f"\nMean absolute change after smoothing: {ch['means']:.2f} characters by bin means, {ch['medians']:.2f} by "
+            f"bin medians, {ch['boundaries']:.2f} by bin boundaries. Smoothing by bin {min(ch, key=ch.get)} changes values "
+            f"least, by bin {max(ch, key=ch.get)} most.\n")
         changes[nb] = ch
     if all(changes[6][k] < changes[4][k] for k in changes[4]):
         say("With 6 bins instead of 4 every smoothing method moves values less, because each bin is narrower.\n")
@@ -89,19 +94,25 @@ def main():
 
     # ---- outliers: IQR vs z ----
     say("## Outlier detection: IQR fence vs z-score\n\n| attribute | IQR fence | #outliers (IQR) | #outliers (abs z > 3) |\n|---|---|---|---|")
-    more_iqr = []
+    more_iqr = []; hi_now = {}
     for c in num:
         v = df[c]; q1, q3 = v.quantile([.25, .75]); i = q3 - q1
-        lo, hi = q1 - 1.5 * i, q3 + 1.5 * i
+        lo, hi = q1 - 1.5 * i, q3 + 1.5 * i; hi_now[c] = hi
         n_iqr, n_z = ((v < lo) | (v > hi)).sum(), (np.abs(stats.zscore(v)) > 3).sum()
         if n_iqr > n_z: more_iqr.append(f"{c} ({n_iqr} vs {n_z})")
         say(f"| {c} | [{lo:.1f}, {hi:.1f}] | {n_iqr} | {n_z} |")
     # the z rule uses mean and std, which the extreme values themselves inflate; the IQR fence uses quartiles only
-    say(f"\nThe IQR fence flags more points than abs(z) > 3 on: {', '.join(more_iqr) or 'none'}. "
+    lead = (f"The IQR fence flags more points than the |z| > 3 rule for {' and '.join([', '.join(more_iqr[:-1]), more_iqr[-1]] if len(more_iqr) > 1 else more_iqr)}."
+            if more_iqr else "The IQR fence never flags more points than the |z| > 3 rule.")
+    fence = re.search(r"IQR fence \[([-\d.]+), ([-\d.]+)\]", (OUT / "preprocess_log.txt").read_text())
+    clean_hi = float(fence[2]) if fence else None
+    rel = ("tighter than" if clean_hi is not None and hi_now["n_chars"] < clean_hi else "different from")
+    fence_s = (f"These fences are computed after outlier removal, so they are {rel} the cleaning fence used earlier "
+               f"(upper limit {clean_hi:.1f} characters); the titles they flag are kept. " if clean_hi is not None else
+               "These fences are computed after outlier removal; the titles they flag are kept. ")
+    say(f"\n{lead} "
         "The z rule is computed from the mean and std, which the extreme values pull up, so it flags fewer of them. "
-        "These fences are recomputed on the cleaned data, so they differ from the p01 cleaning fence (computed on the cleaned "
-        "titles before outlier removal) and the titles they flag are kept. No rows are dropped here; large count values are real "
-        "popular products or merchants.\n")
+        + fence_s + "No rows are dropped here; large count values are real popular products or merchants.\n")
 
     # ---- skew transforms ----
     v = df["listings_per_product"].astype(float)
@@ -118,10 +129,12 @@ def main():
 
     # ---- encoding ----
     oh = pd.get_dummies(df["category"], prefix="cat", dtype=int)
-    say(f"\n## Encoding of category\n\n- Integer (label) encoding: {dict(zip(sorted(df.category.unique()), range(10)))}")
+    cats = sorted(df.category.unique())
+    say(f"\n## Encoding of category\n\n- Integer (label) encoding: categories in alphabetical order get 0-{len(cats) - 1} "
+        f"({cats[0]} = 0, ..., {cats[-1]} = {len(cats) - 1}).")
     say(f"- One-hot encoding: {oh.shape[1]} binary columns ({', '.join(oh.columns[:3])}, ...); every row sums to "
         f"{int(oh.sum(axis=1).min())}. This frame is built only to show the encoding. The integer codes are the class label "
-        "for the decision tree; the ARM transactions (p03, p05) carry the category as one item 'cat=<category>', "
+        "for the decision tree; the association-rule transactions (p03, p05) carry the category as one item 'cat=<category>', "
         "which is the same one-of-ten idea written as an item.")
     (OUT / "stats_transform.md").write_text("\n".join(md))
 

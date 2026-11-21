@@ -39,8 +39,8 @@ def esc(s):
     return s.replace("\\textbackslash{}rightarrow", "\\rightarrow")
 
 def short_heading(t):
-    """Split a long sentence-like heading into (short heading, remainder or None).
-    The remainder is only the part the short heading leaves out, printed as a line under it.
+    """Return (heading, short form for the table of contents or None). A long heading is printed in full,
+    because a cut-off tail reads as a sentence fragment; only the contents list gets the short form.
     Leading 'A. '/'B. ' letters are dropped."""
     t = re.sub(r"^[A-Z]\.\s+", "", t.strip())
     if len(t) <= 60: return t, None
@@ -49,14 +49,7 @@ def short_heading(t):
     head, src = t[:cut(t)].rstrip(" ,.:;"), t
     if len(head) < 12 and ":" in t:                  # 'Extra: K-Means ...' -> use the text after the colon
         src = t.split(":", 1)[1].strip(); head = src[:cut(src)].rstrip(" ,.:;") or head
-    if head == t: return t, None
-    rest = src[len(head):].strip() if src.startswith(head) else ""
-    rest = re.sub(r"^(->|[,.:;])\s*", "", rest)
-    if rest.startswith("("):                         # '(5-fold CV ...)' -> '5-fold CV ...'
-        rest = rest[1:].replace(")", "", 1)
-    rest = rest.strip(" ,.:;")
-    if not rest: return head, None
-    return head, rest[0].upper() + rest[1:] + ("" if rest.endswith((".", ")")) else ".")
+    return t, (head if head != t else None)
 
 def short_header(c):
     """Shorten verbose machine column names (speedup_vs_mlxtend_apriori -> x vs apriori)."""
@@ -98,8 +91,8 @@ def md_to_tex(md, base_level=1, appendix=True):
         m = re.match(r"^(#+)\s+(.*)", l)
         if m:
             lvl = min(len(m.group(1)) - 1 + base_level, 3)
-            head, rest = short_heading(m.group(2))
-            last_head = head
+            full, short = short_heading(m.group(2))
+            last_head = short or full
             # keep a heading on the same page as the start of its content: reserve its intro text and,
             # when a table follows, the whole table (a tabularx cannot break across pages)
             j, text_lines = i + 1, 0
@@ -108,16 +101,16 @@ def md_to_tex(md, base_level=1, appendix=True):
             rows_ahead = 0
             while j < len(lines) and lines[j].startswith("|"): rows_ahead += 1; j += 1
             need = 4 + 2 * text_lines + (0.8 * rows_ahead if rows_ahead <= 40 else 6)
-            need += 2 * bool(rest)                                        # the line printed under a shortened heading
+            need += 2 * (len(full) > 70)                                  # a long heading takes two lines
             if j < len(lines) and lines[j].startswith("#"): need += 14 if lvl == 0 else 6   # a section keeps its first sub-heading's text    # a sub-heading follows: keep its start too
             out.append(f"\\needspace{{{need:.0f}\\baselineskip}}")
-            out.append(f"\\{secs[lvl]}{{{esc(head)}}}" + (f"\n{esc(rest)}\\par" if rest else "")); i += 1; continue
+            out.append(f"\\{secs[lvl]}" + (f"[{{{esc(short)}}}]" if short else "") + f"{{{esc(full)}}}"); i += 1; continue
         if l.startswith("|") and appendix:
             j = i
             while j < len(lines) and lines[j].startswith("|"): j += 1
             if j - i - 2 > LONG_TABLE:                     # header + separator + data rows
                 APPENDIX.append((last_head, md_to_tex("\n".join(lines[i:j]), base_level, appendix=False)))
-                out.append(f"The full table ({j - i - 2} rows) is in Appendix~A, Table~A.{len(APPENDIX)}.\\par")
+                out.append(f"This table ({j - i - 2} rows) is in Appendix~A, Table~A.{len(APPENDIX)}.\\par")
                 i = j; continue
         if l.startswith("|"):
             rows = []
@@ -290,12 +283,13 @@ def front_page(body):
     if (r := g(r"\| 1% \| 80% \| (\d+) \| \d+ \| (\d+) \|", rd("arm/arm_summary.md"))):
         res.append(("Apriori", f"{int(r[0]):,} frequent itemsets and {int(r[1]):,} rules at 1% support, 80% confidence"))
     ms = rd("model/model_summary.md")
-    if (a := g(r"\| stratified random \| ([\d.]+) \|", ms)) and (b := g(r"\| grouped by product[^|]*\| ([\d.]+) \|", ms)):
-        res.append(("Decision tree", f"{float(a[0]):.1%} test accuracy; {float(b[0]):.1%} on products never seen in training"))
+    if (a := g(r"\| stratified random \| ([\d.]+) \|", ms)) and (b := g(r"5 seeds gives accuracy ([\d.]+) \+- ([\d.]+)", ms)):
+        res.append(("Decision tree", f"{float(a[0]):.1%} test accuracy; {float(b[0]):.1%} $\\pm$ {100 * float(b[1]):.1f} "
+                                     "on products never seen in training (5 splits)"))
     if (r := g(r"Over 5 seeds \(LSA-100\): NMI ([\d.]+) \+- ([\d.]+)", ms)):
         res.append(("K-Means", f"k=10, NMI {r[0]} $\\pm$ {r[1]} against the categories over 5 seeds; two dendrograms"))
     if (r := g(r"(\d+) frequent itemsets reduce to (\d+) closed and (\d+) maximal", rd("mafia/mafia_summary.md"))):
-        res.append(("MAFIA", f"{r[2]} maximal itemsets (from {int(r[0]):,} frequent), identical to mlxtend fpmax"))
+        res.append(("MAFIA", f"{r[2]} maximal itemsets (from {int(r[0]):,} frequent)" + (", identical to mlxtend fpmax" if "both give the same itemsets" in rd("mafia/mafia_summary.md") else ", differs from mlxtend fpmax")))
     if (r := g(r"Spark DecisionTree speedup is .*? and ([\d.]+) at (\d+x)", rd("spark/results.md"))):
         res.append(("PySpark", f"decision tree {r[0]} times faster than sklearn at {r[1]} data; slower on the original size"))
     rows = "\n".join(f"\\textbf{{{a}}} & {b.replace('%', chr(92) + '%')} \\\\" for a, b in res)
@@ -370,7 +364,9 @@ Apriori association rules, Decision Tree classification of the category from the
 of titles (with dendrograms), MAFIA maximal frequent itemsets, and a PySpark comparison of two techniques.\\
 \textbf{Tools:} Python 3.12, pandas, scikit-learn, mlxtend, matplotlib/seaborn, PySpark (local mode), MAFIA 1.4 C++
 binary from the FIMI repository. Source files: \texttt{p01\_preprocess.py} \dots\ \texttt{p07\_report.py}.""")
-    parts.append(PARAMS_TEX)
+    sw = pd.read_csv(OUT / "mafia/sweep.csv").set_index("min_sup")       # numbers in the table come from the outputs
+    parts.append(PARAMS_TEX.replace("1,129 to 3,180", f"{int(sw.FI[0.01]):,} to {int(sw.FI[0.005]):,}")
+                 .replace("1\\% (345 listings)", f"1\\% ({int(sw['count'][0.01]):,} listings)"))
     parts.append("\\section{Data preprocessing}\n" + r"""Steps applied by \texttt{p01\_preprocess.py}:
 \begin{itemize}\setlength\itemsep{0pt}
 \item \textbf{(i) Cleaning:} header whitespace stripped; titles lower-cased; punctuation noise removed; units joined
@@ -378,7 +374,9 @@ binary from the FIMI repository. Source files: \texttt{p01\_preprocess.py} \dots
 ('geschirrsp ler'$\rightarrow$'dishwasher'); stop words, one-character junk, bare numbers and SKU/model codes
 (alphanumeric strings of 6+ characters mixing letters and digits, e.g. \texttt{lwf28441w}) removed from the token set;
 duplicate listings checked; titles with no informative token dropped; title-length outliers removed with the
-1.5$\times$IQR rule.
+1.5$\times$IQR rule.""" + (" Only the common German words were translated; some compounds (e.g. gefrierkombination) "
+    "remain and appear in the tree rules." if "gefrierkombination" in (OUT / "model/model_summary.md").read_text() else "")
+    + r"""
 \item \textbf{(ii) Selection:} Not used as features: Product ID (pure identifier, kept only as a row key), Category ID (1:1 with Category Label),
 Cluster Label (the product name of a cluster; its words already appear in the titles); Cluster ID is kept only to build a product-held-out test split.
 \textbf{Brand} is not a column of the dataset: it is approximated by the first informative word of the title (a proxy). Title tokens are the features, Category is the class label.
@@ -413,7 +411,7 @@ What the cleaning did (from \texttt{out/preprocess\_log.txt}):""")
     parts += [fig(rel("model/km_elbow_silhouette.png"), "Elbow (SSE) and silhouette for k = 2..24 (silhouette on a 6,000-listing sample, cosine geometry)", "0.85\\linewidth"),
               fig(rel("model/km_vs_category.png"), "K-Means (k=10) clusters vs true categories", "0.8\\linewidth"),
               fig(rel("model/km_scatter2d.png"), "K-Means clusters projected to 2-D (colour = cluster id; the cluster table in Section 6.1 gives each one's majority category)", "0.5\\linewidth")]
-    parts.append(md_to_tex("## Dendrograms (hierarchical clustering)" + dendro_md, 0))
+    parts.append(md_to_tex("## Dendrograms: hierarchical clustering" + dendro_md, 0))
     parts += [fig(rel("model/dendro_categories.png"), "Dendrogram of the 10 category centroids (Ward)", "0.55\\linewidth"),
               fig(rel("model/dendro_sample.png"), "Dendrogram of 60 listings, 6 per category (average link, cosine). "
                   "Leaf codes: CPU = CPUs, CAM = Digital Cameras, DW = Dishwashers, FZ = Freezers, FF = Fridge Freezers, "

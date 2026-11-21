@@ -186,7 +186,7 @@ def plot(med, tech, path, title, repeats):
     ax.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
     sizes = sorted(sub["size"].unique())
     ax.set_xlabel(f"rows (data replicated {', '.join(f'{z}x' for z in sizes)})")
-    ax.set_ylabel(f"median time over {repeats} runs (s, log scale)")
+    ax.set_ylabel(f"median of {repeats} runs (s, log)")
     ax.set_title(title, fontsize=11)
     ax.grid(True, which="both", alpha=0.25)
     ax.legend(frameon=False)
@@ -295,11 +295,12 @@ def write_report(ctx, tim, outdir):
     cores, ms, mc = ctx["cores"], ctx["min_sup"], ctx["min_conf"]
     sizes, repeats = ctx["sizes"], ctx["repeats"]
     md = []
+    mem = ctx["driver_mem"].upper().replace("G", " GB")        # Spark's '6g' -> '6 GB' for the prose
 
     md.append("# PySpark test drive: association rules and decision trees\n")
-    md.append(f"Machine: {cores} logical cores (`os.cpu_count()` = {cores}), "
+    md.append(f"Machine: {cores} logical cores, "
               f"{ctx['ram_total_gb']:.1f} GB RAM ({ctx['ram_avail_gb']:.1f} GB free at start). "
-              f"Spark {ctx['spark_version']} in `local[*]` mode, driver memory {ctx['driver_mem']}, "
+              f"Spark {ctx['spark_version']} in `local[*]` mode, {mem} driver memory, "
               f"`spark.sql.shuffle.partitions` = {ctx['npart']}. Python {ctx['python']}, "
               f"pandas {ctx['pandas']}.\n")
 
@@ -311,12 +312,13 @@ def write_report(ctx, tim, outdir):
               "against single-threaded Python on the same machine, with no network shuffle. It "
               "is not a cluster result. Speedup = t_single / t_spark, so a value above 1 means "
               f"Spark is faster. Above {FASTER:.2f} is called faster, below {SLOWER:.2f} slower, "
-              "and anything in between break-even, because repeat timings move by a few percent.\n")
+              "and anything in between break-even, because repeat timings move by a few percent. "
+              f"A speedup of {CLEAR:.2f} or more is called a clear gain.\n")
     md.append(f"The sizes {size_list([z for z in sizes if z > 1])} are the original listings "
-              "replicated k times. Replication multiplies every count by k, so supports, confidences, "
+              "copied n times. Copying multiplies every count by n, so supports, confidences, "
               "itemsets and learned trees stay the same and only the amount of work grows. The "
               "study therefore measures throughput, not behaviour on new data.\n")
-    md.append(f"Spark session start-up took {ctx['startup_s']:.2f} s and the JVM warm-up runs "
+    md.append(f"Spark session start-up took {ctx['startup_s']:.2f} s and the JVM warm-up took "
               f"{ctx['warmup_s']:.2f} s. Both are excluded from every timing below.\n")
 
     # ---- A. association rules ------------------------------------------------
@@ -333,7 +335,7 @@ def write_report(ctx, tim, outdir):
               "one-hot encoded. This cannot change the result, because no frequent itemset "
               "contains an infrequent item, but it keeps memory down: a one-hot matrix of all "
               f"items at {max(sizes)}x ({n_rows_max:,} rows) would take {full_gb:.1f} GB before "
-              "Apriori builds a single candidate. Apriori runs with `low_memory=False`. Section 4 "
+              "Apriori builds a single candidate. Section 4 "
               "(p03) runs Apriori on the full one-hot matrix of all items, so its run times are "
               "not comparable with the ones here.\n")
     md.append("| engine | frequent itemsets | rules (all consequent sizes) | rules with 1-item consequent | time at 1x (s, single run) |")
@@ -393,9 +395,9 @@ def write_report(ctx, tim, outdir):
     seen, shown = set(), []
     for r in pool:
         items = frozenset(r["ante"]) | frozenset(r["cons"])
-        if any(i.startswith("cat=") for i in items) or items in seen:
+        if any(i.startswith("cat=") for i in items) or items & seen:   # shares a word with a rule above
             continue
-        seen.add(items)
+        seen |= items
         shown.append(r)
         if len(shown) == 15:
             break
@@ -404,9 +406,11 @@ def write_report(ctx, tim, outdir):
     md.append(f"{A['n_cat_rules_spark']} of the {A['n_rules_spark']} Spark rules have a `cat=` "
               "consequent, i.e. they say which title words imply a product category. The table "
               f"below starts from {src}, sorted by lift with ties broken by confidence, then "
-              "support. It drops every rule that contains a `cat=` item and keeps one rule per "
-              "distinct itemset (antecedent plus consequent), because many high-lift rules are "
-              "reorderings of the same few words.\n")
+              "support. It drops every rule that contains a `cat=` item and every rule that shares a "
+              "word with a rule above it. This is the same filter as Section 4, but Section 4 does not "
+              "break ties in lift this way, so a few rows differ from it. The filter is "
+              "needed because many high-lift rules "
+              "are reorderings of the same few words.\n")
     md.append("| # | antecedent | consequent | support | confidence | lift |")
     md.append("|---|---|---|---|---|---|")
     for i, r in enumerate(shown, 1):
@@ -419,7 +423,9 @@ def write_report(ctx, tim, outdir):
     md.append(f"Same split for both: {D['n_train']} training and {D['n_test']} test listings "
               f"(one shuffled index, seed {ctx['seed']}). Features: binary bag of words over the "
               f"1000 most frequent title terms ({D['vocab_overlap']} of the 1000 terms are the "
-              "same in both vocabularies). Tree: entropy impurity, max depth 20. Accuracy and "
+              "same in both vocabularies). Both engines tokenise the cleaned title string "
+              "(`title_clean`), which still contains the model codes, rather than the filtered "
+              "token set of Section 5. Tree: entropy impurity, max depth 20. Accuracy and "
               "macro F1 (the metric of Section 5) are computed with the same sklearn functions "
               "on the same test rows for both engines.\n")
     md.append("| engine | accuracy | macro F1 | train time at 1x (s, single run) | depth | nodes |")
@@ -441,7 +447,8 @@ def write_report(ctx, tim, outdir):
 
     # ---- extra: k-means ------------------------------------------------------
     if K and K.get("ok"):
-        md.append("\n## Extra: K-Means k=10 on TF-IDF title features (1x, single run)\n")
+        md.append("\n## Extra: K-Means k=10 on TF-IDF title features\n")
+        md.append("Each engine was run once at 1x; this comparison is not part of the scaling study.\n")
         md.append("| engine | time (s) | silhouette |")
         md.append("|---|---|---|")
         md.append(f"| Spark KMeans (k-means-parallel init, 20 iter) | {K['t_spark']:.2f} | "
@@ -450,13 +457,12 @@ def write_report(ctx, tim, outdir):
                   f"10-init LSA model of Section 6) | {K['t_sk']:.2f} | {K['sil_sk']:.3f} "
                   "(Euclidean, 5000-row sample) |\n")
         md.append("The two silhouettes use different distance definitions, so compare each "
-                  "against 0 (no structure) rather than against each other. Not part of the "
-                  "scaling study.\n")
+                  "against 0 (no structure) rather than against each other.\n")
     elif K:
         md.append(f"\n## Extra: K-Means\n\nFailed: `{K.get('error')}`\n")
 
     # ---- scalability ---------------------------------------------------------
-    md.append(f"\n## Scalability: data replicated {min(sizes)}x to {max(sizes)}x\n")
+    md.append(f"\n## Scalability: data copied {min(sizes)}x to {max(sizes)}x\n")
     md.append(f"Median of {repeats} runs per point; each speedup is followed by its range over those runs "
               "(worst to best pairing). Before the "
               "clock starts, the replicated data are built and cached in Spark; the "
@@ -506,7 +512,8 @@ def write_report(ctx, tim, outdir):
     md.append("Peak resident set (VmHWM, reset before each run, max over repeats) of the Python "
               "process and of the Spark JVM, which in local mode is both driver and executor. "
               "The JVM column is only meaningful for Spark rows; for mlxtend and sklearn rows it "
-              "is the idle Spark JVM that stays alive alongside.\n")
+              "is the Spark JVM left over from earlier runs, which still holds its heap; ignore that "
+              "column for those rows.\n")
     md.append("| technique | engine | size | rows | peak Python MB | peak JVM MB |")
     md.append("|---|---|---|---|---|---|")
     for r in big.itertuples():
@@ -519,10 +526,10 @@ def write_report(ctx, tim, outdir):
         md.append(f"\nThe largest single-machine peak is {LABEL[w.engine]} at {w['size']}x with "
                   f"{w.peak_py_mb / 1024:.1f} GB in Python; the Spark runs peak at "
                   f"{spk.peak_py_mb.max():.0f} MB in Python and {spk.peak_jvm_mb.max() / 1024:.1f} GB "
-                  f"in the JVM (heap limit {ctx['driver_mem']}).\n")
+                  f"in the JVM ({mem} heap limit).\n")
 
-    md.append("\nFigures: `fig_speedup_arm.png`, `fig_speedup_dt.png` (log-log, median with "
-              "min-max whiskers).\n")
+    md.append("\nThe two figures at the end of this section plot these times on log-log axes "
+              "(median, with min-max whiskers).\n")
 
     # ---- interpretation ------------------------------------------------------
     md.append("\n## Interpretation\n")

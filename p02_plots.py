@@ -33,10 +33,10 @@ plt.rcParams.update({"font.size": 13, "axes.titlesize": 14, "axes.labelsize": 13
 INF = []                                                    # (fig id, title, caption, [bullets]) -> markdown
 
 
-def save(fig, name, title, shrink=0.8):
+def save(fig, name, title, shrink=0.8, layout=True):
     """Save the PNG at 150 dpi on a canvas sized for the PDF."""
     fig.set_size_inches(fig.get_size_inches() * shrink)   # the PDF shows plots ~4 in wide; a smaller canvas keeps text legible there
-    fig.tight_layout()   # title is the report heading, so it is not repeated on the image
+    if layout: fig.tight_layout()   # title is the report heading, so it is not repeated on the image
     fig.savefig(FIG / f"{name}.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -196,8 +196,8 @@ small = int((bc < 10).sum())
 note("fig06", "Pareto chart of top-25 brands",
      f"Listings of the 25 largest brands with the cumulative share of all {N} listings "
      f"(Pareto chart, {bc.size:,} brand tokens)", [
-    f"The top 25 brands cover {pct(cum_all.iloc[24])} of all listings; {n80} brands are needed to reach 80% "
-    f"of the corpus out of {bc.size:,} distinct brand tokens (brand = first informative word of the title, a proxy).",
+    f"The top 25 brands cover {pct(cum_all.iloc[24])} of all listings. Of the {bc.size:,} brand tokens (brand = first "
+    f"informative word of the title, a proxy), {n80} are needed to cover 80% of listings.",
     f"The single largest brand, '{bc.index[0]}', appears in {bc.iloc[0]:,} listings ({pct(bc.iloc[0] / len(df))}), "
     f"about {bc.iloc[0] / bc.iloc[1]:.1f}x the runner-up '{bc.index[1]}' ({bc.iloc[1]:,}).",
     f"{small} of the {bc.size:,} brand tokens ({pct(small / bc.size)}) have fewer than 10 listings and "
@@ -227,8 +227,10 @@ note("fig07", "Category x top-15 brand heatmap",
     f"Listings of the top-15 brands make up {pct(ct.values.sum() / len(df))} of the corpus. Within a category the "
     f"largest brand's share ranges from {pct(topshare.min())} ({topshare.idxmin()}) to "
     f"{pct(topshare.max())} ({topshare.idxmax()}).",
-    f"Number of the top-15 brands present per category: most in {', '.join(npres[npres == npres.max()].index)} "
-    f"({npres.max()} of 15), fewest in {', '.join(npres[npres == npres.min()].index)} ({npres.min()}).",
+    f"{' and '.join(npres[npres == npres.max()].index)} "
+    f"{'contains' if (npres == npres.max()).sum() == 1 else 'each contain'} {npres.max()} of the top-15 brands; "
+    f"{' and '.join(npres[npres == npres.min()].index)} "
+    f"{'contains' if (npres == npres.min()).sum() == 1 else 'each contain'} only {npres.min()}.",
 ])
 
 # fig08 scatter n_tokens vs n_chars
@@ -253,8 +255,8 @@ note("fig08", "Scatter of tokens vs characters",
      f"Characters against tokens per title, coloured by category (scatter plot, jittered, random sample of "
      f"{len(samp):,} of {N} listings)", [
     f"Token count and character length are strongly correlated (Pearson r = {r_all:.2f} over all {len(df):,} "
-    f"listings; per category between {r_cat.min():.2f} and {r_cat.max():.2f}). r stays below 1 because n_chars "
-    f"also counts spaces, numbers and codes that n_tokens leaves out.",
+    f"listings; per category between {r_cat.min():.2f} and {r_cat.max():.2f}). r stays below 1 because words differ in "
+    f"length, and n_chars also counts numbers and codes that n_tokens leaves out.",
     f"Spread of title length at a fixed token count (std, token counts with >= 100 listings): "
     f"{sd.iloc[0]:.1f} characters at {sd.index[0]} token{'s' if sd.index[0] != 1 else ''}, rising to {sd.max():.1f} at {sd.idxmax()} tokens, "
     f"then {sd.iloc[-1]:.1f} at {sd.index[-1]} tokens.",
@@ -293,7 +295,7 @@ note("fig09", "Zipf plot of token frequency",
     f"Between ranks {lo} and {hi:,} (every token seen in at least 2 listings) the log-log fit has slope "
     f"{slope:.2f} and R^2 = {r2:.3f}: frequency falls roughly as rank^{slope:.2f}.",
     f"The top {lo} ranks are flatter (slope {head_slope:.2f} on their own). Extended to rank 1, the line predicts "
-    f"{pred1 / f[0]:.0f} times the {f[0]:,} listings the top token actually has.",
+    f"{pred1 / f[0]:.0f} times as many listings as the {f[0]:,} the top token actually has.",
     f"Just {half_rank:,} of {len(freq):,} token types ({pct(half_rank / len(freq))}) account for half of all "
     f"token occurrences.",
     f"{hapax:,} token types ({pct(hapax / len(freq))}) occur in exactly one listing and {rare:,} "
@@ -343,17 +345,16 @@ radn = (rad - rad.min()) / (rad.max() - rad.min())        # min-max per axis acr
 angles = np.linspace(0, 2 * np.pi, rad.shape[1], endpoint=False)
 # one small radar per category: ten overlaid polygons were unreadable
 short_ax = ["tokens", "chars", "codes", "brands", "merchants", "listings"]
-fig, axs = plt.subplots(2, 5, figsize=(17, 8), subplot_kw=dict(polar=True))
+fig, axs = plt.subplots(2, 5, figsize=(21, 9), subplot_kw=dict(polar=True))
 for ax, c in zip(axs.flat, CATS):
     v = radn.loc[c].values
     ax.plot(np.r_[angles, angles[0]], np.r_[v, v[0]], lw=1.8, color=PAL[c])
     ax.fill(np.r_[angles, angles[0]], np.r_[v, v[0]], color=PAL[c], alpha=0.25)
     ax.set_xticks(angles); ax.set_xticklabels(short_ax, fontsize=14)
     ax.set_ylim(0, 1); ax.set_yticks([0.5, 1]); ax.set_yticklabels([], fontsize=10)
-    ax.set_title(c, fontsize=16, pad=16)
-fig.suptitle("Category profiles on six indicators, each scaled 0 (lowest category) to 1 (highest)", y=1.0)
-fig.tight_layout()
-save(fig, "fig11_radar_category_profile", "Radar profile per category", shrink=1.0)
+    ax.set_title(c, fontsize=17, fontweight="bold", pad=34)   # clear of the codes/chars labels
+fig.subplots_adjust(wspace=0.85, hspace=0.55)
+save(fig, "fig11_radar_category_profile", "Radar profile per category", shrink=1.0, layout=False)
 note("fig11", "Radar profile per category",
      f"Six indicators per category, each min-max scaled across categories (radar charts, {len(CATS)} categories)", [
     f"{rad['mean n_codes'].idxmax()} titles carry the most SKU/model codes (mean {rad['mean n_codes'].max():.2f} per "
@@ -390,7 +391,7 @@ lstep, ustep = qs[1] - qs[0], qs[2] - qs[1]
 note("fig12", "Quantile plot of title length",
      f"Sorted title length against f = (i - 0.5)/n, with Q1, median and Q3 marked (quantile plot, n = {N})", [
     f"Q1 = {qs[0]:.0f}, median = {qs[1]:.0f}, Q3 = {qs[2]:.0f}. "
-    + (f"The median sits in the middle of the box: both steps are {lstep:.0f} characters."
+    + (f"The median is exactly halfway between Q1 and Q3 ({lstep:.0f} characters on each side)."
        if lstep == ustep else
        f"The step from Q1 to the median is {lstep:.0f} characters and from the median to Q3 {ustep:.0f}."),
     f"The tails reach {np.quantile(xs, 0.01):.0f} characters at the 1st percentile and {np.quantile(xs, 0.99):.0f} "
