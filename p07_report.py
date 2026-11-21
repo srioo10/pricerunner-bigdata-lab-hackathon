@@ -1,5 +1,5 @@
 """
-Step 7 - Build the PDF report (report/report.pdf) from the generated outputs.
+Step 7 - Build the PDF report (report/cs23i1006_report.pdf) from the generated outputs.
 The result sections are converted from the .md/.csv files written by p01-p06, and the dataset counts in the
 first section are computed from the raw and cleaned CSVs. Two parts are hand-written: the short method text in
 this script and exam/conclusions.md. For conclusions.md, check_traceability() lists every number that does not
@@ -451,13 +451,13 @@ What the cleaning did (from \texttt{out/preprocess\_log.txt}):""")
 \begin{document}\maketitle
 """ + (f"\\begin{{center}}\\small Code: \\url{{{CODE_LINK}}}\\\\ Dataset: \\url{{https://archive.ics.uci.edu/dataset/837/product+classification+and+clustering}}\\end{{center}}\n" if CODE_LINK else "") + front_page("\n\n".join(parts)) + r"""\newpage\tableofcontents\thispagestyle{plain}\newpage
 """ + re.sub(r"\\(sub)?section\{", lambda m: "\\FloatBarrier\n" + m.group(0), "\n\n".join(parts)) + "\n\\FloatBarrier\n\\end{document}\n"
-    (REP / "report.tex").write_text(tex)
+    (REP / "cs23i1006_report.tex").write_text(tex)
     for _ in range(2):
-        r = subprocess.run(["pdflatex", "-interaction=nonstopmode", "-halt-on-error", "report.tex"], cwd=REP,
+        r = subprocess.run(["pdflatex", "-interaction=nonstopmode", "-halt-on-error", "cs23i1006_report.tex"], cwd=REP,
                            capture_output=True, text=True)
     if r.returncode:
         print(r.stdout[-3000:]); raise SystemExit("pdflatex failed")
-    print("built", REP / "report.pdf")
+    print("built", REP / "cs23i1006_report.pdf")
 
 if __name__ == "__main__":
     main()

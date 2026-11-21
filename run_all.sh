@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the whole analysis end to end and builds report/report.pdf.
+# Runs the whole analysis end to end and builds report/cs23i1006_report.pdf.
 # Usage: ./run_all.sh [--skip-spark]
 #   --skip-spark  skip p06 (PySpark benchmark, the slow step) and keep the existing out/spark results
 # Expects a Python with requirements.txt installed; set PY to override the default venv.

@@ -2,7 +2,7 @@
 
 End-semester lab, Analytics & Systems of Big Data Practice (25CS5004 / CS5010).
 Submitted by Sooraj S (CS23I1006).
-The report is [`report/report.pdf`](report/report.pdf).
+The report is [`report/cs23i1006_report.pdf`](report/cs23i1006_report.pdf).
 
 ## Data
 UCI ML Repository #837, "Product Classification and Clustering" (CC BY 4.0):
@@ -31,7 +31,7 @@ layout `../data/uci837/`.
 | `p04_tree_kmeans.py` | decision tree (CV-tuned, IF-THEN rules), K-Means, dendrograms | `out/model/` |
 | `p05_mafia.py` | MAFIA maximal frequent itemsets and maximal rules | `out/mafia/` |
 | `p06_pyspark.py` | PySpark FPGrowth and DecisionTree vs single-machine, 1x-20x data | `out/spark/` |
-| `p07_report.py` | builds the PDF from the outputs and `conclusions.md` | `report/report.pdf` |
+| `p07_report.py` | builds the PDF from the outputs and `conclusions.md` | `report/cs23i1006_report.pdf` |
 
 `own_apriori.py` is a small from-scratch Apriori, used in `p03` to cross-check the library results.
 

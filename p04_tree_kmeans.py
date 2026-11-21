@@ -217,7 +217,7 @@ def main():
     cm = confusion_matrix(yte, pred, labels=classes)
     fig, ax = plt.subplots(figsize=(9, 8))
     ConfusionMatrixDisplay(cm, display_labels=classes).plot(ax=ax, xticks_rotation=45, cmap="Blues", colorbar=False)
-    ax.set_title("Decision tree - confusion matrix (test set)"); fig.savefig(OUT / "dt_confusion.png", dpi=150, bbox_inches="tight"); plt.close(fig)
+    ax.set_title("Decision tree - confusion matrix (test set)"); fig.tight_layout(); fig.savefig(OUT / "dt_confusion.png", dpi=150, bbox_inches="tight"); plt.close(fig)
     off = cm.copy(); np.fill_diagonal(off, 0); i, j = ci, cj = np.unravel_index(off.argmax(), off.shape)
     say(f"Most frequent confusion: {off[i, j]} '{classes[i]}' listings predicted as '{classes[j]}'.\n")
     rec = pd.Series(np.diag(cm) / cm.sum(axis=1), index=classes).sort_values()
@@ -230,7 +230,7 @@ def main():
     imp = pd.Series(clf.feature_importances_, index=names).sort_values(ascending=False).head(20)
     fig, ax = plt.subplots(figsize=(7, 6)); imp[::-1].plot.barh(ax=ax, color="#4C72B0")
     ax.set_title("Decision tree - top 20 feature importances"); ax.set_xlabel("Gini/entropy importance")
-    fig.savefig(OUT / "dt_importance.png", dpi=150, bbox_inches="tight"); plt.close(fig)
+    fig.tight_layout(); fig.savefig(OUT / "dt_importance.png", dpi=150, bbox_inches="tight"); plt.close(fig)
     say("Top 10 important words: " + ", ".join(f"{k} ({v:.3f})" for k, v in imp.head(10).items()) + "\n")
     brands = [w for w in imp.head(10).index if w in BRANDS]
     say(f"Importance inference: the top 10 words carry {imp.head(10).sum():.1%} of the total importance. Most name a product "
@@ -243,7 +243,7 @@ def main():
     for t in ax.texts:                                     # the 10 class counts per node overlap; the class line says enough
         t.set_text(re.sub(r"\n(value = )?\[[^\]]*\]", "", t.get_text(), flags=re.S))
     ax.set_title(f"Tuned decision tree ({bp['criterion']}, {clf.get_n_leaves()} leaves, depth {clf.get_depth()}); top 2 levels drawn")
-    fig.savefig(OUT / "dt_tree.png", dpi=150, bbox_inches="tight"); plt.close(fig)
+    fig.tight_layout(); fig.savefig(OUT / "dt_tree.png", dpi=150, bbox_inches="tight"); plt.close(fig)
     rules = tree_rules(clf, names, classes, max_rules=25, min_samples=100)
     covered = sum(n for n, *_ in rules)
     say(f"## IF-THEN rules from the tuned tree\n\nThe tuned tree has {clf.get_n_leaves()} leaves (depth {clf.get_depth()}); "
@@ -330,7 +330,7 @@ def main():
     fig, ax = plt.subplots(1, 2, figsize=(11, 4))
     ax[0].plot(ks, sse, "o-"); ax[0].set(title="Elbow: SSE vs k", xlabel="k", ylabel="SSE (inertia)")
     ax[1].plot(ks, sil, "o-", color="C1"); ax[1].set(title="Silhouette vs k", xlabel="k", ylabel="silhouette")
-    fig.savefig(OUT / "km_elbow_silhouette.png", dpi=150, bbox_inches="tight"); plt.close(fig)
+    fig.tight_layout(); fig.savefig(OUT / "km_elbow_silhouette.png", dpi=150, bbox_inches="tight"); plt.close(fig)
     pd.DataFrame(dict(k=ks, sse=sse, silhouette=sil)).to_csv(OUT / "km_k_sweep.csv", index=False)
     kbest = ks[int(np.argmax(sil))]
     say("| k | SSE | silhouette |\n|---|---|---|\n" + "\n".join(f"| {k} | {s:.1f} | {si:.4f} |" for k, s, si in zip(ks, sse, sil)))
@@ -404,24 +404,24 @@ def main():
     ax.set_xticks(range(len(ct.columns)), ct.columns, rotation=45, ha="right"); ax.set_yticks(range(10), [f"C{c}" for c in range(10)])
     for (a, b), v in np.ndenumerate(ct.values): ax.text(b, a, v, ha="center", va="center", color="w", fontsize=10)
     ax.set_title("K-Means (k=10) clusters vs true categories"); fig.colorbar(im, label="log(1+count)")
-    fig.savefig(OUT / "km_vs_category.png", dpi=150, bbox_inches="tight"); plt.close(fig)
+    fig.tight_layout(); fig.savefig(OUT / "km_vs_category.png", dpi=150, bbox_inches="tight"); plt.close(fig)
     sv2 = TruncatedSVD(2, random_state=0); P2 = sv2.fit_transform(Z[samp])
     # how much of the cluster structure survives in 2-D: silhouette of the same labels in the plane vs in the full space
     s2, sfull = silhouette_score(P2, lab[samp]), silhouette_score(Z[samp], lab[samp])
-    say(f"- 2-D projection (figure below): the two SVD components keep {sv2.explained_variance_ratio_.sum():.0%} of the variance. "
+    say(f"- 2-D projection (the scatter plot of clusters in this section): the two SVD components keep {sv2.explained_variance_ratio_.sum():.0%} of the variance. "
         f"The same cluster labels give silhouette {s2:.3f} in the plane against {sfull:.3f} in the full space, so clusters that "
         "overlap in the plot can still be separate in 100 dimensions; the plot shows layout, not separation.\n")
     fig, ax = plt.subplots(figsize=(7, 6)); sc = ax.scatter(P2[:, 0], P2[:, 1], c=lab[samp], cmap="tab10", s=4, alpha=.6)
     ax.set(title="K-Means clusters in 2-D (SVD projection, 6000 listings)", xlabel="SVD component 1", ylabel="SVD component 2")
     ax.legend(*sc.legend_elements(), title="cluster", loc="upper right", fontsize=9, ncol=2)
-    fig.savefig(OUT / "km_scatter2d.png", dpi=150, bbox_inches="tight"); plt.close(fig)
+    fig.tight_layout(); fig.savefig(OUT / "km_scatter2d.png", dpi=150, bbox_inches="tight"); plt.close(fig)
 
     # ---------------- DENDROGRAMS ----------------
     cent = np.vstack([Z[y == c].mean(0) for c in classes])
     Lc = linkage(cent, method="ward")
     fig, ax = plt.subplots(figsize=(9, 5)); dendrogram(Lc, labels=classes, leaf_rotation=45, ax=ax)
     ax.set_title("Dendrogram of category centroids (Ward, LSA space)"); ax.set_ylabel("merge distance")
-    fig.savefig(OUT / "dendro_categories.png", dpi=150, bbox_inches="tight"); plt.close(fig)
+    fig.tight_layout(); fig.savefig(OUT / "dendro_categories.png", dpi=150, bbox_inches="tight"); plt.close(fig)
     say("\n## Dendrogram merges (category centroids, Ward)\n")
     names_c = list(classes); members = [[c] for c in classes]
     def part(i, last=False):
@@ -461,7 +461,7 @@ def main():
     dendrogram(Ls, labels=[CODE[c] for c in y[idx]], orientation="left", leaf_font_size=11, ax=ax)
     ax.set_xlabel("cosine distance")
     ax.set_title("60 listings (6 per category), average link")
-    fig.savefig(OUT / "dendro_sample.png", dpi=150, bbox_inches="tight"); plt.close(fig)
+    fig.tight_layout(); fig.savefig(OUT / "dendro_sample.png", dpi=150, bbox_inches="tight"); plt.close(fig)
     coph = squareform(cophenet(Ls)); np.fill_diagonal(coph, np.inf)
     # nearest leaf in the dendrogram has the same category? ties are common, so average over all tied nearest leaves
     near = coph == coph.min(1, keepdims=True)
